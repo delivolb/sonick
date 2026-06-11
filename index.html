@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sonick Delivery System</title>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Stylesheets -->
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/rtl.css">
+
+<!-- Theme: load first to prevent flash of wrong theme -->
+<script src="js/theme.js"></script>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading-screen">
+  <div class="spinner"></div>
+  <p style="color:var(--text-3);font-size:13px;">Connecting to Sonick...</p>
+</div>
+
+<!-- LOGIN -->
+<div id="login-screen" class="hidden">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="logo-mark">S</div>
+      <h1>Sonick Delivery</h1>
+      <p>Delivery Management System</p>
+    </div>
+    <div id="login-error" class="login-error hidden"></div>
+    <form id="login-form" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label class="form-label" id="label-email">Email</label>
+        <input type="email" id="login-email" class="form-input" placeholder="your@email.com" required autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label class="form-label" id="label-password">Password</label>
+        <input type="password" id="login-password" class="form-input" placeholder="••••••••" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary btn-full btn-lg" id="login-btn" style="margin-top:8px;">Sign In</button>
+    </form>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <div id="sidebar-overlay" onclick="closeSidebar()"></div>
+
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <div class="logo-mark">S</div>
+        <div>
+          <div class="logo-text">Sonick</div>
+          <div class="logo-sub">DELIVERY SYSTEM</div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-title" data-nav-section="overview">Overview</div>
+      <div class="nav-item active" onclick="navigate('dashboard')" data-page="dashboard">
+        <span class="nav-icon">📊</span><span data-nav-label>Dashboard</span>
+      </div>
+
+      <div class="nav-section-title" data-nav-section="operations">Operations</div>
+      <div class="nav-item" onclick="navigate('shipments')" data-page="shipments">
+        <span class="nav-icon">📦</span><span data-nav-label>Shipments</span>
+      </div>
+      <div class="nav-item" onclick="navigate('new-shipment')" data-page="new-shipment" id="nav-new-ship">
+        <span class="nav-icon">➕</span><span data-nav-label>New Shipment</span>
+      </div>
+      <div class="nav-item" onclick="navigate('archive')" data-page="archive">
+        <span class="nav-icon">🗄️</span><span data-nav-label>Archive</span>
+      </div>
+
+      <div class="nav-section-title" id="nav-section-fin" data-nav-section="finance">Finance</div>
+      <div class="nav-item" onclick="navigate('debts')" data-page="debts" id="nav-debts">
+        <span class="nav-icon">💰</span><span data-nav-label>Debts &amp; Payments</span>
+      </div>
+      <div class="nav-item" onclick="navigate('general')" data-page="general" id="nav-general">
+        <span class="nav-icon">📈</span><span data-nav-label>General Report</span>
+      </div>
+
+      <div class="nav-section-title" id="nav-section-mgmt" data-nav-section="management">Management</div>
+      <div class="nav-item" onclick="navigate('companies')" data-page="companies" id="nav-companies">
+        <span class="nav-icon">🏢</span><span data-nav-label>Companies</span>
+      </div>
+      <div class="nav-item" onclick="navigate('drivers')" data-page="drivers" id="nav-drivers">
+        <span class="nav-icon">🚗</span><span data-nav-label>Drivers</span>
+      </div>
+      <div class="nav-item" onclick="navigate('users')" data-page="users" id="nav-users">
+        <span class="nav-icon">👥</span><span data-nav-label>Users</span>
+      </div>
+
+      <div class="nav-section-title" data-nav-section="system">System</div>
+      <div class="nav-item" onclick="navigate('settings')" data-page="settings">
+        <span class="nav-icon">⚙️</span><span data-nav-label>Settings</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-profile" onclick="navigate('settings')">
+        <div class="user-avatar" id="user-avatar">?</div>
+        <div class="user-info">
+          <div class="user-name" id="user-display-name">Loading...</div>
+          <div class="user-role" id="user-role-label">—</div>
+        </div>
+        <span style="color:var(--text-3);font-size:12px;">⚙</span>
+      </div>
+      <button class="btn btn-ghost btn-full" style="margin-top:4px;justify-content:flex-start;gap:8px;" onclick="handleLogout()">
+        <span>🚪</span><span id="signout-label">Sign Out</span>
+      </button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="topbar">
+      <div class="topbar-left">
+        <button class="topbar-menu-btn" onclick="openSidebar()">☰</button>
+        <div class="page-title" id="page-title">Dashboard</div>
+      </div>
+      <div class="topbar-right">
+        <div class="topbar-stat" id="topbar-dollar" style="display:none;">
+          <span id="topbar-dollar-label">$ Rate:</span>
+          <strong id="topbar-dollar-rate">—</strong>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="lang-btn" onclick="toggleLang()" style="font-weight:700;min-width:52px;">AR</button>
+        <button class="theme-toggle-btn" id="theme-btn" onclick="toggleTheme()" title="Switch to Light Mode">☀️</button>
+        <button class="btn btn-primary btn-sm" onclick="navigate('new-shipment')" id="topbar-new-ship">+ New Shipment</button>
+      </div>
+    </header>
+    <div class="page-content" id="page-content"></div>
+  </main>
+</div>
+
+<!-- MODALS -->
+<div class="modal-overlay" id="modal-shipment">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-shipment-title">New Shipment</h2>
+      <button class="modal-close" onclick="closeModal('modal-shipment')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-shipment-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-shipment')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveShipment()">Save Shipment</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-company">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-company-title">New Company</h2>
+      <button class="modal-close" onclick="closeModal('modal-company')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-company-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-company')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCompany()">Save Company</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-driver">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-driver-title">New Driver</h2>
+      <button class="modal-close" onclick="closeModal('modal-driver')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-driver-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-driver')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveDriver()">Save Driver</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-user">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-user-title">New User</h2>
+      <button class="modal-close" onclick="closeModal('modal-user')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-user-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-user')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUser()">Save User</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-payment">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title">Record Payment</h2>
+      <button class="modal-close" onclick="closeModal('modal-payment')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-payment-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-payment')">Cancel</button>
+      <button class="btn btn-success" onclick="savePayment()">Record Payment</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-detail">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-detail-title">Shipment Details</h2>
+      <button class="modal-close" onclick="closeModal('modal-detail')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-detail-body"></div>
+    <div class="modal-footer" id="modal-detail-footer"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-confirm-title">Confirm</h2>
+      <button class="modal-close" onclick="closeModal('modal-confirm')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-confirm-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-confirm')">Cancel</button>
+      <button class="btn btn-danger" id="modal-confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<!-- Scripts — order matters (theme.js already loaded in <head>) -->
+<script src="js/i18n.js"></script>
+<script src="js/app.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/pages.js"></script>
+<script>
+  applyLang();
+  initFirebase();
+</script>
+
+</body>
+</html>
