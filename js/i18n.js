@@ -1,0 +1,514 @@
+/* ===================================================
+   SONICK DELIVERY SYSTEM — Translations (i18n)
+   =================================================== */
+
+const TRANSLATIONS = {
+  en: {
+    dir: 'ltr',
+    langBtn: 'AR',
+    appName: 'Sonick Delivery',
+    appSub: 'Delivery Management System',
+    deliverySystem: 'DELIVERY SYSTEM',
+    emailLabel: 'Email',
+    passwordLabel: 'Password',
+    signIn: 'Sign In',
+    signingIn: 'Signing in...',
+    signOut: 'Sign Out',
+    loginFailed: 'Login failed. Check your credentials.',
+    invalidCreds: 'Incorrect email or password.',
+    tooManyAttempts: 'Too many attempts. Try again later.',
+    userNotFound: 'User data not found. Contact admin.',
+    accountDisabled: 'Your account is disabled. Contact admin.',
+    overview: 'Overview',
+    home: 'Home',
+    dashboard: 'Dashboard',
+    operations: 'Operations',
+    shipments: 'Shipments',
+    newShipment: 'New Shipment',
+    archive: 'Archive',
+    finance: 'Finance',
+    debtsPayments: 'Debts & Payments',
+    generalReport: 'General Report',
+    management: 'Management',
+    companies: 'Companies',
+    drivers: 'Drivers',
+    users: 'Users',
+    system: 'System',
+    settings: 'Settings',
+    newShipmentBtn: '+ New Shipment',
+    dollarRateLabel: '$ Rate:',
+    totalShipments: 'Total Shipments',
+    pending: 'Pending',
+    delivered: 'Delivered',
+    revenue: 'Revenue ($)',
+    profit: 'Profit ($)',
+    quickActions: 'Quick Actions',
+    viewShipments: 'View Shipments',
+    payments: 'Payments',
+    recentShipments: 'Recent Shipments',
+    latestActivity: 'Latest activity across all operations',
+    viewAll: 'View All',
+    view: 'View',
+    shipNum: '#Ship',
+    customer: 'Customer',
+    company: 'Company',
+    driver: 'Driver',
+    contractor: 'Contractor',
+    priceUSD: 'Price ($)',
+    priceLL: 'Price (L.L.)',
+    profitCol: 'Profit ($)',
+    status: 'Status',
+    date: 'Date',
+    actions: 'Actions',
+    phone: 'Phone',
+    address: 'Address',
+    searchShipments: 'Search shipments...',
+    searchArchive: 'Search archive...',
+    searchCompanies: 'Search companies...',
+    searchDrivers: 'Search drivers...',
+    createNewShipment: '📦 Create New Shipment',
+    descPlaceholder: 'Any notes about this shipment...',
+    cancel: 'Cancel',
+    saveShipmentBtn: 'Save Shipment',
+    shipNumRequired: 'Ship number is required',
+    shipmentUpdated: 'Shipment updated ✅',
+    shipmentCreated: 'Shipment created ✅',
+    errorSaving: 'Error saving: ',
+    shipmentNotFound: 'Shipment not found',
+    noPermission: 'No permission',
+    shipmentDetails: 'Shipment Details',
+    close: 'Close',
+    edit: '✏️ Edit',
+    archiveBtn: '🗄️ Archive',
+    deleteShipmentConfirm: 'Delete this shipment?',
+    cannotUndo: 'This action cannot be undone.',
+    archiveShipmentConfirm: 'Archive this shipment?',
+    archiveMsg: 'Shipment will be moved to archive.',
+    shipmentDeleted: 'Shipment deleted',
+    shipmentArchived: 'Shipment archived 🗄️',
+    archivedShipments: 'archived shipments',
+    totalReceived: 'Total Received',
+    totalPaidOut: 'Total Paid Out',
+    balance: 'Balance',
+    recordPayment: '+ Record Payment',
+    entity: 'Entity',
+    dirIn: '↑ In',
+    dirOut: '↓ Out',
+    paymentNote: 'Notes',
+    entityRequired: 'Entity and amount required',
+    paymentRecorded: 'Payment recorded ✅',
+    count: 'Count',
+    revenueCol: 'Revenue ($)',
+    revenueLL: 'Revenue (L.L.)',
+    companyName: 'Company Name',
+    deliveryCostCol: 'Delivery Cost ($)',
+    newCompany: 'New Company',
+    companyAdded: 'Company added ✅',
+    companyUpdated: 'Company updated ✅',
+    deleteCompanyConfirm: 'Delete this company?',
+    driverName: 'Driver Name',
+    activeStatus: 'Status',
+    newDriver: 'New Driver',
+    driverAdded: 'Driver added ✅',
+    driverUpdated: 'Driver updated ✅',
+    deleteDriverConfirm: 'Delete this driver?',
+    activeLabel: 'Active',
+    inactiveLabel: 'Inactive',
+    newUser: 'Add User',
+    editUser: 'Edit User',
+    userUpdated: 'User updated ✅',
+    userCreated: 'User created ✅',
+    nameEmailRequired: 'Name and email required',
+    passRequired: 'Password must be 6+ characters',
+    authNote: 'New users must also be created in Firebase Authentication.',
+    rateUpdated: 'Exchange rate updated ✅',
+    profileUpdated: 'Profile updated ✅',
+    resetSent: 'Reset email sent to ',
+    nameRequired: 'Name required',
+    rateRequired: 'Enter a valid rate',
+    deleted: 'Deleted',
+    error: 'Error: ',
+    showing: 'Showing',
+    of: 'of',
+    total: 'Total:',
+    confirm: 'Confirm',
+    csvExported: 'CSV exported ✅',
+    logoutFailed: 'Logout failed',
+    profitF: 'Profit',
+    byStatus: 'By Status',
+    byDriver: 'By Driver',
+    byCompany: 'By Company',
+
+    /* ── Statuses ── */
+    statusPending:        'Pending',
+    statusDelivered:      'Delivered',
+    statusCancelled:      'Cancelled',
+    statusDelayed:        'Delayed',
+    statusReturnedUnpaid: 'Returned – Unpaid Delivery',
+    statusReturnedPaid:   'Returned – Paid Delivery',
+
+    /* ── Returned-Paid delivery cost field ── */
+    returnedDeliveryCost:    'Returned Delivery Cost ($)',
+    returnedDeliveryCostHint:'Delivery cost paid on this returned shipment (deducted from profit)',
+
+    /* ── Backup & Restore ── */
+    backupRestore:        'Backup & Restore',
+    backupSectionTitle:   'Create a Backup',
+    backupSectionDesc:    'Download a single file containing every record in your system — shipments, archive, companies, drivers, users, payments and settings.',
+    downloadBackupBtn:    '⬇ Download Backup',
+    creatingBackup:       'Preparing backup...',
+    backupDownloaded:     'Backup downloaded successfully',
+    backupFailed:         'Backup failed: ',
+    lastBackupLabel:      'Last backup on this device',
+    neverBackedUp:        'No backup created yet on this device',
+    restoreSectionTitle:  'Restore from Backup',
+    restoreSectionDesc:   'Upload a previously downloaded backup file to restore your data. Records with matching IDs will be overwritten; nothing already in your database is deleted.',
+    chooseBackupFile:     'Choose Backup File',
+    noFileChosen:         'No file chosen',
+    restoreBtn:           'Restore Backup',
+    restoreWarningTitle:  'Restore this backup?',
+    restoreWarningMsg:    'This will overwrite any existing records that share the same ID as those in the backup file. This action cannot be undone. Continue?',
+    restoringData:        'Restoring... this may take a moment',
+    restoreSuccess:       'Backup restored successfully',
+    restoreFailed:        'Restore failed: ',
+    invalidBackupFile:    'This does not look like a valid Sonick backup file.',
+    backupFileLabel:      'Backup file',
+    backupCollections:    'Collections included',
+    backupRecords:        'records',
+
+    /* ── Driver portal login (admin-side setup) ── */
+    portalAccessTitle:    'Driver Portal Login',
+    portalAccessDesc:     'Let this driver sign in on their own to view and update the orders assigned to them.',
+    loginUsernameLabel:   'Login Username',
+    loginPasswordLabel:   'Login Password',
+    loginUsernameHint:    'Letters and numbers only, no spaces',
+    grantPortalAccessBtn: 'Grant Portal Access',
+    portalAccessGranted:  'Portal access granted — the driver can now sign in',
+    portalAccessFailed:   'Could not grant portal access: ',
+    portalStatusEnabled:  'Portal login enabled',
+    portalStatusDisabled: 'No portal login yet',
+    resetPasswordHint:    'To reset this driver\'s password, go to Firebase Console → Authentication → Users and search for',
+    usernameRequired:     'Enter both a username and password to enable portal login, or leave both blank.',
+    usernameTaken:        'That username is already taken — choose another.',
+    portalColumnLabel:    'Portal',
+    driverPortalLink:     'Driver Portal',
+    driverPortalLinkDesc: 'Drivers sign in separately at driver.html — not through this dashboard.',
+
+    /* ── Driver portal (driver.html) ── */
+    driverPortalTitle:    'Driver Portal',
+    driverLoginSubtitle:  'Sign in to view your assigned orders',
+    driverSignIn:         'Sign In',
+    driverSigningIn:      'Signing in...',
+    driverLoginFailed:    'Incorrect username or password.',
+    driverAccountDisabled:'Your account is disabled. Contact your admin.',
+    driverWelcomeBack:    'Welcome back',
+    myOrdersTab:          'My Orders',
+    myArchiveTab:         'My Archive',
+    noActiveOrders:       'No active orders right now',
+    noActiveOrdersDesc:   'New orders assigned to you will show up here.',
+    noArchivedOrders:     'No completed orders yet',
+    noArchivedOrdersDesc: 'Orders you finish will be filed here once archived.',
+    updateStatusLabel:    'Update Status',
+    statusUpdated:        'Status updated',
+    statusUpdateFailed:   'Could not update status: ',
+    callCustomer:         'Call',
+    assignedOn:           'Assigned',
+    driverNoteLabel:      'Note',
+    driverNotePlaceholder:'Add a note for the office (optional)',
+    saveNoteBtn:          'Save Note',
+    noteSaved:            'Note saved',
+  },
+
+  ar: {
+    dir: 'rtl',
+    langBtn: 'EN',
+    appName: 'سونيك للتوصيل',
+    appSub: 'نظام إدارة التوصيل',
+    deliverySystem: 'نظام التوصيل',
+    emailLabel: 'البريد الإلكتروني',
+    passwordLabel: 'كلمة المرور',
+    signIn: 'تسجيل الدخول',
+    signingIn: 'جارٍ الدخول...',
+    signOut: 'تسجيل الخروج',
+    loginFailed: 'فشل تسجيل الدخول. تحقق من بياناتك.',
+    invalidCreds: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
+    tooManyAttempts: 'محاولات كثيرة. حاول لاحقاً.',
+    userNotFound: 'بيانات المستخدم غير موجودة. تواصل مع المسؤول.',
+    accountDisabled: 'حسابك معطّل. تواصل مع المسؤول.',
+    overview: 'نظرة عامة',
+    home: 'الرئيسية',
+    dashboard: 'لوحة التحكم',
+    operations: 'العمليات',
+    shipments: 'الطلبيات',
+    newShipment: 'طلبية جديدة',
+    archive: 'الأرشيف',
+    finance: 'المالية',
+    debtsPayments: 'الديون والمدفوعات',
+    generalReport: 'التقرير العام',
+    management: 'الإدارة',
+    companies: 'الشركات',
+    drivers: 'السائقون',
+    users: 'المستخدمون',
+    system: 'النظام',
+    settings: 'الإعدادات',
+    newShipmentBtn: '+ طلبية جديدة',
+    dollarRateLabel: 'سعر $:',
+    totalShipments: 'إجمالي الطلبيات',
+    pending: 'قيد الانتظار',
+    delivered: 'تم التوصيل',
+    revenue: 'الإيرادات ($)',
+    profit: 'الربح ($)',
+    quickActions: 'إجراءات سريعة',
+    viewShipments: 'عرض الطلبيات',
+    payments: 'المدفوعات',
+    recentShipments: 'الطلبيات الأخيرة',
+    latestActivity: 'آخر النشاطات عبر جميع العمليات',
+    viewAll: 'عرض الكل',
+    view: 'عرض',
+    shipNum: '#رقم الطلبية',
+    customer: 'العميل',
+    company: 'الشركة',
+    driver: 'السائق',
+    contractor: 'المقاول',
+    priceUSD: 'السعر ($)',
+    priceLL: 'السعر (ل.ل.)',
+    profitCol: 'الربح ($)',
+    status: 'الحالة',
+    date: 'التاريخ',
+    actions: 'الإجراءات',
+    phone: 'الهاتف',
+    address: 'العنوان',
+    searchShipments: 'بحث في الطلبيات...',
+    searchArchive: 'بحث في الأرشيف...',
+    searchCompanies: 'بحث في الشركات...',
+    searchDrivers: 'بحث في السائقين...',
+    createNewShipment: '📦 إنشاء طلبية جديدة',
+    descPlaceholder: 'أي ملاحظات حول هذه الطلبية...',
+    cancel: 'إلغاء',
+    saveShipmentBtn: 'حفظ الطلبية',
+    shipNumRequired: 'رقم الطلبية مطلوب',
+    shipmentUpdated: 'تم تحديث الطلبية ✅',
+    shipmentCreated: 'تم إنشاء الطلبية ✅',
+    errorSaving: 'خطأ في الحفظ: ',
+    shipmentNotFound: 'الطلبية غير موجودة',
+    noPermission: 'لا توجد صلاحية',
+    shipmentDetails: 'تفاصيل الطلبية',
+    close: 'إغلاق',
+    edit: '✏️ تعديل',
+    archiveBtn: '🗄️ أرشفة',
+    deleteShipmentConfirm: 'حذف هذه الطلبية؟',
+    cannotUndo: 'لا يمكن التراجع عن هذا الإجراء.',
+    archiveShipmentConfirm: 'أرشفة هذه الطلبية؟',
+    archiveMsg: 'سيتم نقل الطلبية إلى الأرشيف.',
+    shipmentDeleted: 'تم حذف الطلبية',
+    shipmentArchived: 'تمت أرشفة الطلبية 🗄️',
+    archivedShipments: 'طلبية مؤرشفة',
+    totalReceived: 'إجمالي المستلم',
+    totalPaidOut: 'إجمالي المدفوع',
+    balance: 'الرصيد',
+    recordPayment: '+ تسجيل دفعة',
+    entity: 'الجهة',
+    dirIn: '↑ وارد',
+    dirOut: '↓ صادر',
+    paymentNote: 'الملاحظات',
+    entityRequired: 'الجهة والمبلغ مطلوبان',
+    paymentRecorded: 'تم تسجيل الدفعة ✅',
+    count: 'العدد',
+    revenueCol: 'الإيرادات ($)',
+    revenueLL: 'الإيرادات (ل.ل.)',
+    companyName: 'اسم الشركة',
+    deliveryCostCol: 'تكلفة التوصيل ($)',
+    newCompany: 'شركة جديدة',
+    companyAdded: 'تمت إضافة الشركة ✅',
+    companyUpdated: 'تم تحديث الشركة ✅',
+    deleteCompanyConfirm: 'حذف هذه الشركة؟',
+    driverName: 'اسم السائق',
+    activeStatus: 'الحالة',
+    newDriver: 'سائق جديد',
+    driverAdded: 'تمت إضافة السائق ✅',
+    driverUpdated: 'تم تحديث السائق ✅',
+    deleteDriverConfirm: 'حذف هذا السائق؟',
+    activeLabel: 'نشط',
+    inactiveLabel: 'غير نشط',
+    newUser: 'إضافة مستخدم',
+    editUser: 'تعديل المستخدم',
+    userUpdated: 'تم تحديث المستخدم ✅',
+    userCreated: 'تم إنشاء المستخدم ✅',
+    nameEmailRequired: 'الاسم والبريد الإلكتروني مطلوبان',
+    passRequired: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
+    authNote: 'يجب إنشاء المستخدمين الجدد في Firebase Authentication أيضاً.',
+    rateUpdated: 'تم تحديث سعر الصرف ✅',
+    profileUpdated: 'تم تحديث الملف الشخصي ✅',
+    resetSent: 'تم إرسال بريد إعادة التعيين إلى ',
+    nameRequired: 'الاسم مطلوب',
+    rateRequired: 'أدخل سعرًا صحيحًا',
+    deleted: 'تم الحذف',
+    error: 'خطأ: ',
+    showing: 'عرض',
+    of: 'من',
+    total: 'الإجمالي:',
+    confirm: 'تأكيد',
+    csvExported: 'تم تصدير CSV ✅',
+    logoutFailed: 'فشل تسجيل الخروج',
+    profitF: 'الربح',
+    byStatus: 'حسب الحالة',
+    byDriver: 'حسب السائق',
+    byCompany: 'حسب الشركة',
+
+    /* ── Statuses ── */
+    statusPending:        'انتظار',
+    statusDelivered:      'تم التوصيل',
+    statusCancelled:      'ملغى',
+    statusDelayed:        'متأخر',
+    statusReturnedUnpaid: 'مرتجع لم يدفع ديلفري',
+    statusReturnedPaid:   'مرتجع تم دفع ديلفري',
+
+    /* ── Returned-Paid delivery cost field ── */
+    returnedDeliveryCost:    'تكلفة ديلفري المرتجع ($)',
+    returnedDeliveryCostHint:'تكلفة التوصيل المدفوعة على هذا المرتجع (تُخصم من الربح)',
+
+    /* ── Backup & Restore ── */
+    backupRestore:        'النسخ الاحتياطي والاستعادة',
+    backupSectionTitle:   'إنشاء نسخة احتياطية',
+    backupSectionDesc:    'حمّل ملفاً واحداً يحتوي كل سجلات نظامك: الطلبيات، الأرشيف، الشركات، السائقين، المستخدمين، المدفوعات والإعدادات.',
+    downloadBackupBtn:    '⬇ تحميل النسخة الاحتياطية',
+    creatingBackup:       'جارٍ تجهيز النسخة الاحتياطية...',
+    backupDownloaded:     'تم تحميل النسخة الاحتياطية بنجاح',
+    backupFailed:         'فشل إنشاء النسخة الاحتياطية: ',
+    lastBackupLabel:      'آخر نسخة احتياطية على هذا الجهاز',
+    neverBackedUp:        'لم يتم إنشاء أي نسخة احتياطية على هذا الجهاز بعد',
+    restoreSectionTitle:  'الاستعادة من نسخة احتياطية',
+    restoreSectionDesc:   'ارفع ملف نسخة احتياطية تم تحميله سابقاً لاستعادة بياناتك. سيتم استبدال السجلات التي تحمل نفس المعرف، ولن يُحذف أي شيء موجود حالياً في قاعدة البيانات.',
+    chooseBackupFile:     'اختر ملف النسخة الاحتياطية',
+    noFileChosen:         'لم يتم اختيار ملف',
+    restoreBtn:           'استعادة النسخة الاحتياطية',
+    restoreWarningTitle:  'استعادة هذه النسخة الاحتياطية؟',
+    restoreWarningMsg:    'سيؤدي هذا إلى استبدال أي سجلات موجودة تحمل نفس معرف السجلات في الملف. لا يمكن التراجع عن هذا الإجراء. المتابعة؟',
+    restoringData:        'جارٍ الاستعادة... قد يستغرق هذا لحظة',
+    restoreSuccess:       'تمت استعادة النسخة الاحتياطية بنجاح',
+    restoreFailed:        'فشلت الاستعادة: ',
+    invalidBackupFile:    'هذا لا يبدو ملف نسخة احتياطية صالح لنظام سونيك.',
+    backupFileLabel:      'ملف النسخة الاحتياطية',
+    backupCollections:    'المجموعات المتضمنة',
+    backupRecords:        'سجل',
+
+    /* ── Driver portal login (admin-side setup) ── */
+    portalAccessTitle:    'دخول بوابة السائق',
+    portalAccessDesc:     'اسمح لهذا السائق بتسجيل الدخول بنفسه لعرض وتحديث الطلبيات المسندة إليه.',
+    loginUsernameLabel:   'اسم المستخدم لتسجيل الدخول',
+    loginPasswordLabel:   'كلمة مرور تسجيل الدخول',
+    loginUsernameHint:    'أحرف وأرقام فقط، بدون مسافات',
+    grantPortalAccessBtn: 'منح دخول البوابة',
+    portalAccessGranted:  'تم منح دخول البوابة — يمكن للسائق الآن تسجيل الدخول',
+    portalAccessFailed:   'تعذّر منح دخول البوابة: ',
+    portalStatusEnabled:  'دخول البوابة مُفعّل',
+    portalStatusDisabled: 'لا يوجد دخول بوابة بعد',
+    resetPasswordHint:    'لإعادة تعيين كلمة مرور هذا السائق، اذهب إلى Firebase Console ← Authentication ← Users وابحث عن',
+    usernameRequired:     'أدخل اسم مستخدم وكلمة مرور لتفعيل دخول البوابة، أو اترك الحقلين فارغين.',
+    usernameTaken:        'اسم المستخدم هذا مستخدم بالفعل — اختر اسماً آخر.',
+    portalColumnLabel:    'البوابة',
+    driverPortalLink:     'بوابة السائق',
+    driverPortalLinkDesc: 'يسجّل السائقون الدخول بشكل منفصل عبر driver.html — وليس من خلال هذه اللوحة.',
+
+    /* ── Driver portal (driver.html) ── */
+    driverPortalTitle:    'بوابة السائق',
+    driverLoginSubtitle:  'سجّل الدخول لعرض طلبياتك المسندة إليك',
+    driverSignIn:         'تسجيل الدخول',
+    driverSigningIn:      'جارٍ الدخول...',
+    driverLoginFailed:    'اسم المستخدم أو كلمة المرور غير صحيحة.',
+    driverAccountDisabled:'حسابك معطّل. تواصل مع المسؤول.',
+    driverWelcomeBack:    'مرحباً بعودتك',
+    myOrdersTab:          'طلبياتي',
+    myArchiveTab:         'أرشيفي',
+    noActiveOrders:       'لا توجد طلبيات نشطة حالياً',
+    noActiveOrdersDesc:   'ستظهر هنا الطلبيات الجديدة المسندة إليك.',
+    noArchivedOrders:     'لا توجد طلبيات مكتملة بعد',
+    noArchivedOrdersDesc: 'ستُحفظ هنا الطلبيات التي تنهيها بعد أرشفتها.',
+    updateStatusLabel:    'تحديث الحالة',
+    statusUpdated:        'تم تحديث الحالة',
+    statusUpdateFailed:   'تعذّر تحديث الحالة: ',
+    callCustomer:         'اتصال',
+    assignedOn:           'أُسندت في',
+    driverNoteLabel:      'ملاحظة',
+    driverNotePlaceholder:'أضف ملاحظة للمكتب (اختياري)',
+    saveNoteBtn:          'حفظ الملاحظة',
+    noteSaved:            'تم حفظ الملاحظة',
+  }
+};
+
+let currentLang = localStorage.getItem('sonick_lang') || 'en';
+
+function t(key) {
+  return (TRANSLATIONS[currentLang] && TRANSLATIONS[currentLang][key]) ||
+         (TRANSLATIONS['en'] && TRANSLATIONS['en'][key]) ||
+         key;
+}
+
+function toggleLang() {
+  currentLang = currentLang === 'en' ? 'ar' : 'en';
+  localStorage.setItem('sonick_lang', currentLang);
+  applyLang();
+  navigate(currentPage);
+}
+
+function applyLang() {
+  const lang = TRANSLATIONS[currentLang];
+  const html = document.documentElement;
+  html.setAttribute('dir', lang.dir);
+  html.setAttribute('lang', currentLang);
+
+  const langBtn = document.getElementById('lang-btn');
+  if (langBtn) langBtn.textContent = lang.langBtn;
+
+  const loginLogoH1 = document.querySelector('.login-logo h1');
+  const loginLogoP  = document.querySelector('.login-logo p');
+  if (loginLogoH1) loginLogoH1.textContent = lang.appName;
+  if (loginLogoP)  loginLogoP.textContent  = lang.appSub;
+
+  const lblEmail = document.getElementById('label-email');
+  const lblPass  = document.getElementById('label-password');
+  if (lblEmail) lblEmail.textContent = lang.emailLabel;
+  if (lblPass)  lblPass.textContent  = lang.passwordLabel;
+
+  const loginBtn = document.getElementById('login-btn');
+  if (loginBtn && !loginBtn.disabled) loginBtn.textContent = lang.signIn;
+
+  const logoText = document.querySelector('.sidebar-logo .logo-text');
+  const logoSub  = document.querySelector('.sidebar-logo .logo-sub');
+  if (logoText) logoText.textContent = lang.appName;
+  if (logoSub)  logoSub.textContent  = lang.deliverySystem;
+
+  const navLabelMap = {
+    dashboard: 'dashboard', shipments: 'shipments',
+    'new-shipment': 'newShipment', archive: 'archive',
+    debts: 'debtsPayments', general: 'generalReport',
+    companies: 'companies', drivers: 'drivers',
+    users: 'users', settings: 'settings'
+  };
+  document.querySelectorAll('.nav-item[data-page]').forEach(el => {
+    const page = el.dataset.page;
+    const span = el.querySelector('[data-nav-label]');
+    if (span && navLabelMap[page] && lang[navLabelMap[page]]) {
+      span.textContent = lang[navLabelMap[page]];
+    }
+  });
+
+  document.querySelectorAll('[data-nav-section]').forEach(el => {
+    const key = el.dataset.navSection;
+    if (lang[key]) el.textContent = lang[key];
+  });
+
+  const signoutLabel = document.getElementById('signout-label');
+  if (signoutLabel) signoutLabel.textContent = lang.signOut;
+
+  const topbarNewShip = document.getElementById('topbar-new-ship');
+  if (topbarNewShip) topbarNewShip.textContent = lang.newShipmentBtn;
+
+  const topbarDollarLabel = document.getElementById('topbar-dollar-label');
+  if (topbarDollarLabel) topbarDollarLabel.textContent = lang.dollarRateLabel;
+
+  const pageTitleEl = document.getElementById('page-title');
+  if (pageTitleEl && navLabelMap[currentPage] && lang[navLabelMap[currentPage]]) {
+    pageTitleEl.textContent = lang[navLabelMap[currentPage]];
+  }
+}
