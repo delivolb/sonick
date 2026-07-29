@@ -183,7 +183,7 @@ function usernameToEmail(username) {
 }
 
 /** Create a brand-new driver whose Firestore doc ID equals their new Auth UID from the start. */
-async function createDriverWithPortal(name, phones, active, username, password) {
+async function createDriverWithPortal(name, phones, active, username, password, deliveryCost) {
   const email    = usernameToEmail(username);
   const secAuth  = _getSecondaryAuth();
   const cred     = await secAuth.createUserWithEmailAndPassword(email, password);
@@ -191,10 +191,11 @@ async function createDriverWithPortal(name, phones, active, username, password) 
   await secAuth.signOut();
 
   await db.collection('sonick_drivers').doc(uid).set({
-    name, phones, active,
+    name, phones, active, deliveryCost: deliveryCost || 0,
     username: username.trim(),
     loginEmail: email,
     hasPortalAccess: true,
+    plainPassword: password,
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });
   return uid;
@@ -206,7 +207,7 @@ async function createDriverWithPortal(name, phones, active, username, password) 
  * doc keyed by the new Auth UID, re-points every shipment/archive record
  * that referenced the old ID, then removes the old doc.
  */
-async function grantPortalAccessToExistingDriver(oldDriverId, name, phones, active, username, password) {
+async function grantPortalAccessToExistingDriver(oldDriverId, name, phones, active, username, password, deliveryCost) {
   const email   = usernameToEmail(username);
   const secAuth = _getSecondaryAuth();
   const cred    = await secAuth.createUserWithEmailAndPassword(email, password);
@@ -214,10 +215,11 @@ async function grantPortalAccessToExistingDriver(oldDriverId, name, phones, acti
   await secAuth.signOut();
 
   await db.collection('sonick_drivers').doc(uid).set({
-    name, phones, active,
+    name, phones, active, deliveryCost: deliveryCost || 0,
     username: username.trim(),
     loginEmail: email,
     hasPortalAccess: true,
+    plainPassword: password,
     migratedFrom: oldDriverId,
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });

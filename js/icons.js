@@ -63,6 +63,11 @@ const ICONS = {
   note: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>`,
 
   user: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+
+  /* Real, brand-colored file-type glyphs (not currentColor line icons like the rest of this
+     file) — used on the Export Excel / Export PDF buttons so they read as actual file icons. */
+  excelFile: `<svg width="16" height="18" viewBox="0 0 24 28" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-4px;"><path d="M4 2h11l5 5v17a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z" fill="#21A366"/><path d="M15 2v5h5z" fill="#0F7244"/><path d="M6.7 12.3h2.15l1.25 2.15 1.3-2.15h2.15l-2.35 3.55L13.6 19.4h-2.2l-1.35-2.25-1.35 2.25H6.5l2.5-3.55-2.3-3.55z" fill="#fff"/></svg>`,
+  pdfFile: `<svg width="16" height="18" viewBox="0 0 24 28" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-4px;"><path d="M4 2h11l5 5v17a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z" fill="#E8433A"/><path d="M15 2v5h5z" fill="#B22B22"/><text x="12" y="19.5" font-family="Arial, Helvetica, sans-serif" font-size="7.2" font-weight="800" fill="#fff" text-anchor="middle">PDF</text></svg>`,
 };
 
 /** Fill every element with a [data-icon] attribute with its matching SVG markup. */

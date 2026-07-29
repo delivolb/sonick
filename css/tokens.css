@@ -52,32 +52,55 @@
 
 /* ===== LIGHT MODE ===== */
 html[data-theme="light"] {
-  --brand-ghost:  rgba(79,110,245,0.08);
-  --brand-border: rgba(79,110,245,0.24);
+  --brand-light:  #3A54D6;
+  --brand-ghost:  rgba(79,110,245,0.10);
+  --brand-border: rgba(79,110,245,0.30);
 
-  --bg:   #EEF1F8;
-  --bg-2: #FFFFFF;
-  --bg-3: #F4F6FB;
-  --bg-4: #E7EBF5;
-  --bg-5: #D3DAEA;
+  --bg:   #E4E8F2;
+  --bg-2: #F8F9FC;
+  --bg-3: #ECEFF7;
+  --bg-4: #DDE2F0;
+  --bg-5: #C4CCE2;
 
   --text:   #10162A;
-  --text-2: #4A5578;
-  --text-3: #838DAE;
+  --text-2: #333D5E;
+  --text-3: #59638A;
 
-  --border:   rgba(16,22,42,0.08);
-  --border-2: rgba(16,22,42,0.14);
+  --border:   rgba(16,22,42,0.11);
+  --border-2: rgba(16,22,42,0.18);
 
-  --green-ghost:  rgba(46,212,122,0.10);
-  --amber-ghost:  rgba(255,176,32,0.10);
-  --blue-ghost:   rgba(61,169,252,0.10);
-  --red-ghost:    rgba(255,77,106,0.10);
-  --purple-ghost: rgba(179,104,255,0.10);
+  --green:        #1A8F52;
+  --green-ghost:  rgba(26,143,82,0.12);
+  --amber:        #B5790A;
+  --amber-ghost:  rgba(181,121,10,0.12);
+  --blue:         #1873C4;
+  --blue-ghost:   rgba(24,115,196,0.12);
+  --red:          #D42C4E;
+  --red-ghost:    rgba(212,44,78,0.12);
+  --purple:       #7C35D6;
+  --purple-ghost: rgba(124,53,214,0.12);
 
-  --shadow:      0 4px 24px rgba(16,22,42,0.09);
-  --shadow-sm:   0 2px 8px rgba(16,22,42,0.06);
-  --shadow-glow: 0 8px 24px rgba(79,110,245,0.18);
+  --shadow:      0 4px 24px rgba(16,22,42,0.13);
+  --shadow-sm:   0 2px 8px rgba(16,22,42,0.09);
+  --shadow-glow: 0 8px 24px rgba(79,110,245,0.22);
 }
+
+/* Light mode: bump weight/color of small or secondary text so it holds up
+   against the brighter background (dark mode's neon-on-navy palette already
+   has plenty of contrast and is left untouched). */
+html[data-theme="light"] thead th        { color: var(--text-2); font-weight: 800; }
+html[data-theme="light"] tbody td        { font-weight: 600; }
+html[data-theme="light"] .badge          { font-weight: 800; }
+html[data-theme="light"] .stat-label     { color: var(--text-2); }
+html[data-theme="light"] .nav-section-title { color: var(--text-2); }
+html[data-theme="light"] .nav-item       { font-weight: 600; }
+html[data-theme="light"] .nav-item.active,
+html[data-theme="light"] .nav-item.active .nav-icon {
+  color: var(--brand-dark);
+}
+html[data-theme="light"] .mobile-card-label { color: var(--text-2); font-weight: 700; }
+html[data-theme="light"] .detail-label   { color: var(--text-2); }
+html[data-theme="light"] .fin-item .fin-label { color: var(--text-2); }
 
 /* ===== SMOOTH THEME TRANSITION ===== */
 *,

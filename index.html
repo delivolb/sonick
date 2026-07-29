@@ -10,6 +10,14 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
+<!-- ExcelJS: used to generate a styled, true .xlsx export (correct Arabic encoding + colors/fonts) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+
+<!-- jsPDF + html2canvas: used to generate a styled, branded .pdf export (renders the report as HTML
+     first so Arabic text shapes/joins correctly, then rasterizes it into the PDF) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
 <!-- Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -86,9 +94,6 @@
       <div class="nav-item" onclick="navigate('shipments')" data-page="shipments">
         <span class="nav-icon" data-icon="package"></span><span data-nav-label>Shipments</span>
       </div>
-      <div class="nav-item" onclick="navigate('new-shipment')" data-page="new-shipment" id="nav-new-ship">
-        <span class="nav-icon" data-icon="plusCircle"></span><span data-nav-label>New Shipment</span>
-      </div>
       <div class="nav-item" onclick="navigate('archive')" data-page="archive">
         <span class="nav-icon" data-icon="archive"></span><span data-nav-label>Archive</span>
       </div>
@@ -155,7 +160,7 @@
         </div>
         <button class="btn btn-secondary btn-sm" id="lang-btn" onclick="toggleLang()" style="font-weight:700;min-width:52px;">AR</button>
         <button class="theme-toggle-btn" id="theme-btn" onclick="toggleTheme()" title="Switch to Light Mode"><span data-icon="sun"></span></button>
-        <button class="btn btn-primary btn-sm" onclick="navigate('new-shipment')" id="topbar-new-ship">+ New Shipment</button>
+        <button class="btn btn-primary btn-sm" onclick="openNewShipmentModal()" id="topbar-new-ship">+ New Shipment</button>
       </div>
     </header>
     <div class="page-content" id="page-content"></div>
@@ -201,6 +206,20 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-driver')">Cancel</button>
       <button class="btn btn-primary" onclick="saveDriver()">Save Driver</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-portal-creds">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <h2 class="modal-title" id="portal-creds-title">Driver Portal Access</h2>
+      <button class="modal-close" onclick="closeModal('modal-portal-creds')">✕</button>
+    </div>
+    <div class="modal-body" id="portal-creds-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="portal-creds-copy-btn">Copy Message</button>
+      <button class="btn btn-primary" onclick="closeModal('modal-portal-creds')">Done</button>
     </div>
   </div>
 </div>
@@ -254,6 +273,23 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-confirm')">Cancel</button>
       <button class="btn btn-danger" id="modal-confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-prompt">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-prompt-title">Enter Value</h2>
+      <button class="modal-close" onclick="cancelPromptModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="modal-prompt-message" style="color:var(--text-2);margin-bottom:10px;font-size:0.9rem;"></p>
+      <input type="text" id="modal-prompt-input" class="form-input">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cancelPromptModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-prompt-ok">OK</button>
     </div>
   </div>
 </div>

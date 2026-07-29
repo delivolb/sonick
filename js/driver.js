@@ -95,20 +95,30 @@ function showDriverApp() {
   document.getElementById('driver-app').classList.remove('hidden');
 }
 
+/** Reset the login form back to a retryable state and show an error — used for every
+ *  failure path after Firebase Auth itself has already succeeded (missing/disabled driver
+ *  profile, Firestore permission errors, network issues, etc.), so the "Signing in…" button
+ *  never gets stuck with no way to retry. */
+function resetDriverLoginForm(message) {
+  showDriverLogin();
+  const btn   = document.getElementById('driver-login-btn');
+  const errEl = document.getElementById('login-error');
+  if (btn) { btn.textContent = t('driverSignIn'); btn.disabled = false; }
+  if (errEl && message) { errEl.textContent = message; errEl.classList.remove('hidden'); }
+}
+
 async function loadDriverProfile(user) {
   try {
     const doc = await db.collection('sonick_drivers').doc(user.uid).get();
     if (!doc.exists) {
       await auth.signOut();
-      showDriverLogin();
-      toast(t('driverLoginFailed'), 'error');
+      resetDriverLoginForm(t('driverLoginFailed'));
       return;
     }
     const data = doc.data();
     if (data.active === false) {
       await auth.signOut();
-      showDriverLogin();
-      toast(t('driverAccountDisabled'), 'error');
+      resetDriverLoginForm(t('driverAccountDisabled'));
       return;
     }
     currentDriver = { id: user.uid, ...data };
@@ -116,9 +126,10 @@ async function loadDriverProfile(user) {
     document.getElementById('driver-phone-label').textContent = currentDriver.phones || '';
     showDriverApp();
     applyDriverLang();
-    await loadMyData();
+    subscribeMyData();
   } catch (e) {
-    toast(t('error') + e.message, 'error');
+    try { await auth.signOut(); } catch (_) { /* ignore */ }
+    resetDriverLoginForm(t('error') + e.message);
   }
 }
 
@@ -145,29 +156,44 @@ async function handleDriverLogin(e) {
 }
 
 async function handleDriverLogout() {
-  try { await auth.signOut(); currentDriver = null; showDriverLogin(); }
+  try { unsubscribeMyData(); await auth.signOut(); currentDriver = null; showDriverLogin(); }
   catch (e) { toast(t('error') + e.message, 'error'); }
 }
 
-// ===== DATA =====
-async function loadMyData() {
+// ===== DATA (live-synced with the admin dashboard) =====
+let _myOrdersUnsub = null, _myArchiveUnsub = null;
+
+/** Subscribe to this driver's own shipments + archive in real time, so any change made on
+ *  either side — admin editing a price/status/driver assignment, or the driver updating
+ *  their own status/note below — shows up instantly on the other side without a manual
+ *  refresh or re-login. Replaces any previous subscription first (e.g. re-login). */
+function subscribeMyData() {
   if (!db || !currentDriver) return;
-  try {
-    const [ordersSnap, archiveSnap] = await Promise.all([
-      db.collection('sonick_shipments').where('driverId', '==', currentDriver.id).get(),
-      db.collection('sonick_archive').where('driverId', '==', currentDriver.id).get()
-    ]);
-    myOrders       = ordersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    myArchiveItems = archiveSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    myOrders.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    myArchiveItems.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-  } catch (e) {
-    myOrders = []; myArchiveItems = [];
-    toast(t('error') + e.message, 'error');
-  }
-  document.getElementById('tab-orders-count').textContent  = myOrders.length;
-  document.getElementById('tab-archive-count').textContent = myArchiveItems.length;
-  renderDriverContent();
+  if (_myOrdersUnsub)  { _myOrdersUnsub();  _myOrdersUnsub  = null; }
+  if (_myArchiveUnsub) { _myArchiveUnsub(); _myArchiveUnsub = null; }
+
+  _myOrdersUnsub = db.collection('sonick_shipments').where('driverId', '==', currentDriver.id)
+    .onSnapshot(snap => {
+      myOrders = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      myOrders.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      const countEl = document.getElementById('tab-orders-count');
+      if (countEl) countEl.textContent = myOrders.length;
+      renderDriverContent();
+    }, e => toast(t('error') + e.message, 'error'));
+
+  _myArchiveUnsub = db.collection('sonick_archive').where('driverId', '==', currentDriver.id)
+    .onSnapshot(snap => {
+      myArchiveItems = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      myArchiveItems.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      const countEl = document.getElementById('tab-archive-count');
+      if (countEl) countEl.textContent = myArchiveItems.length;
+      renderDriverContent();
+    }, e => toast(t('error') + e.message, 'error'));
+}
+
+function unsubscribeMyData() {
+  if (_myOrdersUnsub)  { _myOrdersUnsub();  _myOrdersUnsub  = null; }
+  if (_myArchiveUnsub) { _myArchiveUnsub(); _myArchiveUnsub = null; }
 }
 
 function switchDriverTab(tab) {
@@ -243,7 +269,6 @@ async function updateOrderStatus(shipId) {
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     toast(t('statusUpdated'), 'success');
-    await loadMyData();
   } catch (e) {
     toast(t('statusUpdateFailed') + e.message, 'error');
   }

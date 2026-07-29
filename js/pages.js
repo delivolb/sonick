@@ -54,7 +54,7 @@ async function renderDashboard() {
   ${can('canCreateShipments') || can('canManageCompanies') || can('canManageDrivers') ? `
   <div class="section-header"><div class="section-title">${t('quickActions')}</div></div>
   <div class="quick-actions">
-    ${can('canCreateShipments') ? `<div class="quick-action" onclick="navigate('new-shipment')"><div class="qa-icon">${ICONS.plusCircle}</div><span>${t('newShipment')}</span></div>` : ''}
+    ${can('canCreateShipments') ? `<div class="quick-action" onclick="openNewShipmentModal()"><div class="qa-icon">${ICONS.plusCircle}</div><span>${t('newShipment')}</span></div>` : ''}
     <div class="quick-action" onclick="navigate('shipments')"><div class="qa-icon">${ICONS.package}</div><span>${t('viewShipments')}</span></div>
     ${can('canManageCompanies') ? `<div class="quick-action" onclick="navigate('companies')"><div class="qa-icon">${ICONS.building}</div><span>${t('companies')}</span></div>` : ''}
     ${can('canManageDrivers')   ? `<div class="quick-action" onclick="navigate('drivers')"><div class="qa-icon">${ICONS.truck}</div><span>${t('drivers')}</span></div>`   : ''}
@@ -95,9 +95,8 @@ async function renderDashboard() {
 // ===================================================
 //  SHIPMENTS
 // ===================================================
-async function renderShipments() {
-  if (!can('canViewShipments')) { renderAccessDenied(); return; }
-  const content = document.getElementById('page-content');
+/** Fetch shipments from Firestore (or demo data on failure) — shared by full render and lightweight refresh. */
+async function fetchShipmentsFromDB() {
   let ships = [];
   try {
     if (db) {
@@ -105,34 +104,113 @@ async function renderShipments() {
       ships = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     }
   } catch (e) { ships = getDemoShipments(); }
+  return ships;
+}
+
+let _shipmentsUnsub = null;
+
+/** Subscribe to live shipment updates so admin edits and driver-portal edits (status
+ *  changes, notes, reassignment) reflect instantly on both sides without a manual refresh.
+ *  Replaces any previous subscription first — safe to call every time the Shipments page
+ *  is opened. */
+function subscribeShipments(onData) {
+  if (_shipmentsUnsub) { _shipmentsUnsub(); _shipmentsUnsub = null; }
+  if (!db) { onData(getDemoShipments()); return; }
+  _shipmentsUnsub = db.collection('sonick_shipments').orderBy('createdAt', 'desc').limit(500)
+    .onSnapshot(
+      snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+      err  => { console.warn('Shipments live-sync error:', err.message); onData(getDemoShipments()); }
+    );
+}
+
+/** Reload shipment data and re-apply the current filters WITHOUT rebuilding the filter bar —
+ *  keeps the active Company/Driver/Contractor/Status filters (and the Quick Add bar) intact. */
+async function refreshShipmentsData() {
+  window._allShips = await fetchShipmentsFromDB();
+  filterShipments();
+}
+
+async function renderShipments() {
+  if (!can('canViewShipments')) { renderAccessDenied(); return; }
+  const content = document.getElementById('page-content');
 
   const showProfit = can('canViewProfit');
-  const statusOpts = ALL_STATUSES.map(s => `<option value="${s}">${esc(t(STATUS_CONFIG[s].key))}</option>`).join('');
+
+  // Filter dropdowns list all companies/drivers — not just ones that appear in the
+  // currently loaded shipments — so every entity is always selectable.
+  const companyNames    = companies_cache.map(c => c.name).filter(Boolean).sort();
+  const driverNames     = drivers_cache.map(d => d.name).filter(Boolean).sort();
+  const contractorNames = companies_cache.map(c => c.name).filter(Boolean).sort();
 
   content.innerHTML = `
-  ${pageHeader(t('shipments'), [t('operations')], can('canCreateShipments') ? `<button class="btn btn-primary btn-sm" onclick="openNewShipmentModal()">+ ${t('newShipment')}</button>` : '')}
+  ${pageHeader(t('shipments'), [t('operations')])}
   <div class="toolbar">
   <div class="filter-bar">
     <div class="table-search">
       <span class="search-icon">🔍</span>
       <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()" style="width:220px;">
     </div>
-    <select class="filter-select" id="ship-status-filter"  onchange="filterShipments()">
-      <option value="">All Statuses</option>${statusOpts}
-    </select>
+    <div class="dropdown" id="ship-status-dropdown">
+      <button type="button" class="filter-select" onclick="toggleDropdown('ship-status-dropdown')">
+        <span id="ship-status-filter-label">${t('allStatuses')}</span>
+      </button>
+      <div class="dropdown-menu" style="min-width:210px;max-height:280px;overflow-y:auto;">
+        ${ALL_STATUSES.map(s => `
+        <label class="dropdown-item" style="justify-content:flex-start;">
+          <input type="checkbox" class="ship-status-check" value="${s}" onchange="filterShipments()" style="accent-color:var(--brand);">
+          <span>${esc(t(STATUS_CONFIG[s].key))}</span>
+        </label>`).join('')}
+      </div>
+    </div>
     <select class="filter-select" id="ship-company-filter" onchange="filterShipments()">
-      <option value="">All Companies</option>
-      ${companies_cache.map(c => `<option>${esc(c.name)}</option>`).join('')}
+      <option value="">${t('allCompanies')}</option>
+      ${companyNames.map(name => `<option>${esc(name)}</option>`).join('')}
+    </select>
+    <select class="filter-select" id="ship-driver-filter" onchange="filterShipments()">
+      <option value="">${t('allDrivers')}</option>
+      ${driverNames.map(name => `<option>${esc(name)}</option>`).join('')}
+    </select>
+    <select class="filter-select" id="ship-contractor-filter" onchange="filterShipments()">
+      <option value="">${t('allContractors')}</option>
+      ${contractorNames.map(name => `<option>${esc(name)}</option>`).join('')}
     </select>
     <input type="date" class="filter-date" id="ship-date-from" onchange="filterShipments()" title="From date">
     <input type="date" class="filter-date" id="ship-date-to"   onchange="filterShipments()" title="To date">
   </div>
   </div>
 
+  ${can('canCreateShipments') ? `
+  <div class="card" id="ship-fast-order-bar" style="display:none;margin-bottom:16px;padding:14px 16px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <strong style="font-size:0.857rem;color:var(--text-2);">⚡ ${t('quickAddOrder')}</strong>
+      <span id="fast-order-badges" style="display:flex;gap:6px;flex-wrap:wrap;"></span>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div class="form-group" style="margin-bottom:0;min-width:100px;">
+        <label class="form-label">${t('shipNumberLabel')} <span style="color:var(--brand)">*</span></label>
+        <input type="number" id="fo-shipnum" class="form-input" placeholder="${t('shipNumPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <div class="form-group" style="margin-bottom:0;min-width:110px;">
+        <label class="form-label">${t('priceUSD')} <span style="color:var(--brand)">*</span></label>
+        <input type="number" step="0.01" id="fo-price" class="form-input" placeholder="0.00" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <div class="form-group" style="margin-bottom:0;min-width:180px;flex:1;">
+        <label class="form-label">${t('customer')}</label>
+        <input type="text" id="fo-customer" class="form-input" placeholder="${t('recipientNamePlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <div class="form-group" style="margin-bottom:0;min-width:140px;">
+        <label class="form-label">${t('phone')}</label>
+        <input type="tel" id="fo-phone" class="form-input" placeholder="+961..." onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <button class="btn btn-quick-add btn-sm" onclick="quickAddOrder()" style="height:38px;white-space:nowrap;">+ ${t('newShipment')}</button>
+    </div>
+  </div>` : ''}
+
   <div class="table-container desktop-table">
     <div class="table-header">
       <span style="font-size:13px;color:var(--text-2);" id="ships-count">Loading...</span>
-      ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportCSV()">⬇ Export CSV</button>` : ''}
+      ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
     </div>
     <div class="table-scroll">
       <table id="ships-table">
@@ -153,16 +231,123 @@ async function renderShipments() {
   </div>
   <div class="mobile-cards" id="ships-mobile"></div>`;
 
-  window._allShips = ships;
-  filterShipments();
+  window._allShips = [];
+  subscribeShipments(ships => { window._allShips = ships; filterShipments(); });
+}
+
+/** Show a summary in the status filter button: all/one/"N selected" */
+function updateStatusFilterLabel(statuses) {
+  const el = document.getElementById('ship-status-filter-label');
+  if (!el) return;
+  if (!statuses.length)      el.textContent = t('allStatuses');
+  else if (statuses.length === 1) el.textContent = t(STATUS_CONFIG[statuses[0]].key);
+  else el.textContent = `${statuses.length} ${t('selectedLabel')}`;
+}
+
+/**
+ * Show/hide + populate the Quick Add Order bar based on the active
+ * Company/Driver/Contractor filters. Only appears once at least one of
+ * those three filters is set; the matched entities are then "fixed" for
+ * the quick-add form and their stored delivery costs are pulled in as
+ * defaults (company → delivery profit, driver/contractor → their own cost).
+ */
+function updateFastOrderBar(companyName, driverName, contractorName) {
+  const bar = document.getElementById('ship-fast-order-bar');
+  if (!bar) return;
+
+  if (!companyName && !driverName && !contractorName) {
+    bar.style.display = 'none';
+    window._fastOrderFixed = null;
+    return;
+  }
+  const wasHidden = bar.style.display === 'none';
+  bar.style.display = 'block';
+  if (wasHidden) document.getElementById('fo-shipnum')?.focus();
+
+  const companyObj    = companyName    ? companies_cache.find(c => c.name === companyName)    : null;
+  const driverObj      = driverName     ? drivers_cache.find(d => d.name === driverName)        : null;
+  const contractorObj = contractorName ? companies_cache.find(c => c.name === contractorName)  : null;
+
+  window._fastOrderFixed = {
+    companyId: companyObj?.id || '',       companyName: companyObj?.name || '',
+    driverId: driverObj?.id || '',         driverName: driverObj?.name || '',
+    contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '',
+    deliveryProfit:         companyObj?.deliveryCost    || 0,
+    driverDeliveryCost:     driverObj?.deliveryCost      || 0,
+    contractorDeliveryCost: contractorObj?.deliveryCost || 0,
+  };
+
+  const badges = document.getElementById('fast-order-badges');
+  if (badges) {
+    let html = '';
+    if (companyObj)    html += `<span class="badge badge-blue">${t('company')}: ${esc(companyObj.name)}</span>`;
+    if (driverObj)     html += `<span class="badge badge-green">${t('driver')}: ${esc(driverObj.name)}</span>`;
+    if (contractorObj) html += `<span class="badge badge-purple">${t('contractor')}: ${esc(contractorObj.name)}</span>`;
+    badges.innerHTML = html;
+  }
+}
+
+/** Create a shipment from the Quick Add bar using the entities fixed by the active filters. */
+async function quickAddOrder() {
+  const fixed = window._fastOrderFixed;
+  if (!fixed) return;
+
+  const shipNumberRaw = document.getElementById('fo-shipnum')?.value;
+  const shipNumber    = parseInt(shipNumberRaw, 10);
+  if (!shipNumberRaw || isNaN(shipNumber)) { toast(t('shipNumRequired'), 'error'); return; }
+
+  const priceRaw     = document.getElementById('fo-price')?.value;
+  const priceDollar  = parseFloat(priceRaw);
+  if (priceRaw === '' || priceRaw == null || isNaN(priceDollar)) { toast(t('priceUSD'), 'error'); return; }
+
+  const customerName = document.getElementById('fo-customer')?.value?.trim() || '';
+
+  const payload = {
+    shipNumber,
+    date:                   today(),
+    customerName,
+    customerPhone:          document.getElementById('fo-phone')?.value?.trim() || '',
+    customerAddress:        '',
+    companyId:              fixed.companyId,    companyName:    fixed.companyName,
+    driverId:               fixed.driverId,     driverName:     fixed.driverName,
+    contractorId:           fixed.contractorId, contractorName: fixed.contractorName,
+    status:                 'Pending',
+    priceDollar,
+    priceLeb:               0,
+    driverDeliveryCost:     fixed.driverDeliveryCost,
+    contractorDeliveryCost: fixed.contractorDeliveryCost,
+    deliveryProfit:         fixed.deliveryProfit,
+    returnedDeliveryCost:   0,
+    description:            '',
+    createdAt:              firebase.firestore.FieldValue.serverTimestamp(),
+    createdBy:              currentUserData?.id || '',
+  };
+
+  try {
+    if (db) await db.collection('sonick_shipments').add(payload);
+    toast(t('shipmentCreated'), 'success');
+    document.getElementById('fo-shipnum').value  = '';
+    document.getElementById('fo-customer').value = '';
+    document.getElementById('fo-phone').value    = '';
+    document.getElementById('fo-price').value    = '';
+    await refreshShipmentsData();
+    document.getElementById('fo-shipnum')?.focus();
+  } catch (e) {
+    toast(t('errorSaving') + e.message, 'error');
+  }
 }
 
 function filterShipments() {
-  const search   = (document.getElementById('ship-search')?.value   || '').toLowerCase();
-  const status   =  document.getElementById('ship-status-filter')?.value  || '';
-  const company  =  document.getElementById('ship-company-filter')?.value || '';
-  const dateFrom =  document.getElementById('ship-date-from')?.value      || '';
-  const dateTo   =  document.getElementById('ship-date-to')?.value        || '';
+  const search     = (document.getElementById('ship-search')?.value   || '').toLowerCase();
+  const statuses   =  [...document.querySelectorAll('.ship-status-check:checked')].map(cb => cb.value);
+  const company    =  document.getElementById('ship-company-filter')?.value     || '';
+  const driver     =  document.getElementById('ship-driver-filter')?.value      || '';
+  const contractor =  document.getElementById('ship-contractor-filter')?.value  || '';
+  const dateFrom   =  document.getElementById('ship-date-from')?.value          || '';
+  const dateTo     =  document.getElementById('ship-date-to')?.value            || '';
+
+  updateStatusFilterLabel(statuses);
+  updateFastOrderBar(company, driver, contractor);
 
   let ships = (window._allShips || []).filter(s => {
     if (search && !(
@@ -172,8 +357,10 @@ function filterShipments() {
       (s.driverName    || '').toLowerCase().includes(search) ||
       (s.customerAddress || '').toLowerCase().includes(search)
     )) return false;
-    if (status  && s.status      !== status)  return false;
-    if (company && s.companyName !== company) return false;
+    if (statuses.length && !statuses.includes(s.status)) return false;
+    if (company     && s.companyName    !== company)     return false;
+    if (driver      && s.driverName     !== driver)      return false;
+    if (contractor  && s.contractorName !== contractor)  return false;
     if (dateFrom && s.date < dateFrom) return false;
     if (dateTo   && s.date > dateTo)   return false;
     return true;
@@ -199,19 +386,25 @@ function filterShipments() {
   if (totalEl)   totalEl.textContent   = `${t('showing')} ${ships.length} ${t('of')} ${(window._allShips || []).length} ${t('shipments')}`;
 
   if (tbody) {
+    const canEditCells = can('canEditShipments');
     tbody.innerHTML = ships.length
-      ? ships.map(s => `
+      ? ships.map(s => {
+          const dbl = (field) => canEditCells ? `ondblclick="inlineEditCell(this,'${s.id}','${field}')" class="cell-editable" title="${t('dblClickToEdit')}"` : '';
+          return `
         <tr>
-          <td><span class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</span></td>
-          <td><div style="font-weight:500;">${esc(s.customerName || '—')}</div><div style="font-size:11px;color:var(--text-3);">${esc(s.customerPhone || '')}</div></td>
-          <td>${esc(s.companyName    || '—')}</td>
-          <td>${esc(s.driverName     || '—')}</td>
-          <td>${esc(s.contractorName || '—')}</td>
-          <td class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
-          <td class="font-mono">${formatNum(s.priceLeb || 0)}</td>
+          <td ${dbl('shipNumber')}><span class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</span></td>
+          <td>
+            <div ${dbl('customerName')} style="font-weight:500;">${esc(s.customerName || '—')}</div>
+            <div ${dbl('customerPhone')} style="font-size:11px;color:var(--text-3);">${esc(s.customerPhone || '')}</div>
+          </td>
+          <td ${dbl('companyId')}>${esc(s.companyName    || '—')}</td>
+          <td ${dbl('driverId')}>${esc(s.driverName     || '—')}</td>
+          <td ${dbl('contractorId')}>${esc(s.contractorName || '—')}</td>
+          <td ${dbl('priceDollar')} class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
+          <td ${dbl('priceLeb')} class="font-mono">${formatNum(s.priceLeb || 0)}</td>
           ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
-          <td>${statusBadge(s.status)}</td>
-          <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.date || s.createdAt)}</td>
+          <td ${dbl('status')}>${statusBadge(s.status)}</td>
+          <td ${dbl('date')} style="color:var(--text-3);font-size:12px;">${fmtDate(s.date || s.createdAt)}</td>
           <td>
             <div style="display:flex;gap:4px;">
               <button class="btn btn-ghost btn-sm btn-icon" onclick="viewShipment('${s.id}')"    title="${t('view')}">👁</button>
@@ -220,30 +413,134 @@ function filterShipments() {
               ${can('canDeleteShipments')  ? `<button class="btn btn-danger btn-sm btn-icon" onclick="deleteShipment('${s.id}')"  title="Delete">🗑</button>`   : ''}
             </div>
           </td>
-        </tr>`).join('')
+        </tr>`;
+        }).join('')
       : `<tr><td colspan="${showProfit ? 11 : 10}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
   }
 
   if (mobile) mobile.innerHTML = ships.slice(0, 50).map(s => mobileShipCard(s)).join('');
 }
 
-// ===================================================
-//  NEW SHIPMENT PAGE
-// ===================================================
-function renderNewShipment() {
-  if (!can('canCreateShipments')) { renderAccessDenied(); return; }
-  const content = document.getElementById('page-content');
-  editingId = null;
-  content.innerHTML = `
-  ${pageHeader(t('newShipment'), [t('operations'), t('shipments')])}
-  <div class="card" style="max-width:900px;">
-    <div class="card-header"><div class="card-title">${t('createNewShipment')}</div></div>
-    <div class="card-body">${shipmentFormHTML(null)}</div>
-    <div style="padding:0 20px 20px;display:flex;gap:10px;justify-content:flex-end;">
-      <button class="btn btn-secondary" onclick="navigate('shipments')">${t('cancel')}</button>
-      <button class="btn btn-primary btn-lg" onclick="saveShipment()">💾 ${t('saveShipmentBtn')}</button>
-    </div>
-  </div>`;
+// ===== INLINE CELL EDITING (double-click a shipments row cell) =====
+/** Maps an editable field name to how its inline editor should be rendered. */
+const INLINE_EDIT_FIELDS = {
+  shipNumber:    { kind: 'number' },
+  customerName:  { kind: 'text'   },
+  customerPhone: { kind: 'text'   },
+  companyId:     { kind: 'company'     },
+  driverId:      { kind: 'driver'      },
+  contractorId:  { kind: 'contractor'  },
+  priceDollar:   { kind: 'number', step: '0.01' },
+  priceLeb:      { kind: 'number' },
+  status:        { kind: 'status' },
+  date:          { kind: 'date'   },
+};
+
+/** Turn a single shipment table cell into an inline editor on double-click.
+ *  Enter/blur saves, Escape cancels and restores the original cell content. */
+function inlineEditCell(el, id, field) {
+  if (!can('canEditShipments')) return;
+  if (el.querySelector('input,select')) return; // already editing this cell
+
+  const s = (window._allShips || []).find(x => x.id === id);
+  const cfg = INLINE_EDIT_FIELDS[field];
+  if (!s || !cfg) return;
+
+  const prevHTML = el.innerHTML;
+  let editorHTML;
+
+  if (cfg.kind === 'company' || cfg.kind === 'contractor') {
+    const selectedId = cfg.kind === 'company' ? s.companyId : s.contractorId;
+    const opts = companies_cache.map(c => `<option value="${c.id}" ${selectedId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    editorHTML = `<select class="inline-edit-input form-select"><option value="">${cfg.kind === 'company' ? t('selectCompanyOption') : t('noneOption')}</option>${opts}</select>`;
+  } else if (cfg.kind === 'driver') {
+    const opts = drivers_cache.map(d => `<option value="${d.id}" ${s.driverId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
+    editorHTML = `<select class="inline-edit-input form-select"><option value="">${t('noneOption')}</option>${opts}</select>`;
+  } else if (cfg.kind === 'status') {
+    const opts = ALL_STATUSES.map(st => `<option value="${st}" ${s.status === st ? 'selected' : ''}>${esc(t(STATUS_CONFIG[st].key))}</option>`).join('');
+    editorHTML = `<select class="inline-edit-input form-select">${opts}</select>`;
+  } else {
+    const rawVal = s[field];
+    const type = cfg.kind === 'date' ? 'date' : (cfg.kind === 'number' ? 'number' : 'text');
+    editorHTML = `<input type="${type}" ${cfg.step ? `step="${cfg.step}"` : ''} class="inline-edit-input form-input" value="${esc(rawVal ?? '')}">`;
+  }
+
+  el.innerHTML = editorHTML;
+  const input = el.querySelector('input,select');
+  input.focus();
+  if (input.select) input.select();
+
+  let settled = false;
+  const finish = (commit) => {
+    if (settled) return;
+    settled = true;
+    if (!commit) { el.innerHTML = prevHTML; return; }
+    let val = input.value;
+    if (cfg.kind === 'number') val = parseFloat(val) || 0;
+    saveInlineField(id, field, val, () => { el.innerHTML = prevHTML; });
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); finish(true);  }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  if (input.tagName === 'SELECT') {
+    input.addEventListener('change', () => {
+      if (field === 'status' && input.value === 'Returned-Paid') {
+        settled = true; // handled manually below; blocks the blur listener's finish(true)
+        promptInput(
+          {
+            title:        t('returnedDeliveryCost'),
+            message:      t('returnedDeliveryCostPrompt'),
+            defaultValue: s.returnedDeliveryCost || '',
+            type:         'number',
+            step:         '0.01',
+            placeholder:  '0.00',
+          },
+          (costStr) => {
+            const returnedDeliveryCost = parseFloat(costStr) || 0;
+            saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { returnedDeliveryCost });
+          },
+          () => { el.innerHTML = prevHTML; } // cancelled — keep original status
+        );
+      } else {
+        finish(true);
+      }
+    });
+  }
+}
+
+/** Persist one inline-edited field to Firestore (resolving id → name for company/driver/
+ *  contractor changes), then refresh the shipments table while keeping active filters. */
+async function saveInlineField(id, field, value, onFail, extraPayload) {
+  const payload = {};
+  if (field === 'companyId') {
+    const obj = companies_cache.find(c => c.id === value);
+    payload.companyId = value || ''; payload.companyName = obj?.name || '';
+  } else if (field === 'contractorId') {
+    const obj = companies_cache.find(c => c.id === value);
+    payload.contractorId = value || ''; payload.contractorName = obj?.name || '';
+  } else if (field === 'driverId') {
+    const obj = drivers_cache.find(d => d.id === value);
+    payload.driverId = value || ''; payload.driverName = obj?.name || '';
+  } else if (field === 'shipNumber') {
+    payload.shipNumber = parseInt(value, 10) || 0;
+  } else {
+    payload[field] = value;
+  }
+  if (extraPayload) Object.assign(payload, extraPayload);
+  payload.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  payload.updatedBy = currentUserData?.id || '';
+
+  try {
+    if (db) await db.collection('sonick_shipments').doc(id).update(payload);
+    toast(t('shipmentUpdated'), 'success');
+    await refreshShipmentsData();
+  } catch (e) {
+    toast(t('errorSaving') + e.message, 'error');
+    if (onFail) onFail();
+  }
 }
 
 function shipmentFormHTML(data) {
@@ -263,8 +560,8 @@ function shipmentFormHTML(data) {
   return `
   <div class="form-row">
     <div class="form-group">
-      <label class="form-label">Ship Number <span style="color:var(--brand)">*</span></label>
-      <input type="number" id="f-shipnum" class="form-input" value="${d.shipNumber || ''}" placeholder="e.g. 1001">
+      <label class="form-label">${t('shipNumberLabel')} <span style="color:var(--brand)">*</span></label>
+      <input type="number" id="f-shipnum" class="form-input" value="${d.shipNumber || ''}" placeholder="${t('shipNumPlaceholder')}">
     </div>
     <div class="form-group">
       <label class="form-label">${t('date')} <span style="color:var(--brand)">*</span></label>
@@ -274,7 +571,7 @@ function shipmentFormHTML(data) {
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('customer')}</label>
-      <input type="text" id="f-customer" class="form-input" value="${esc(d.customerName || '')}" placeholder="Recipient name">
+      <input type="text" id="f-customer" class="form-input" value="${esc(d.customerName || '')}" placeholder="${t('recipientNamePlaceholder')}">
     </div>
     <div class="form-group">
       <label class="form-label">${t('phone')}</label>
@@ -283,27 +580,27 @@ function shipmentFormHTML(data) {
   </div>
   <div class="form-group">
     <label class="form-label">${t('address')}</label>
-    <input type="text" id="f-address" class="form-input" value="${esc(d.customerAddress || '')}" placeholder="Delivery address">
+    <input type="text" id="f-address" class="form-input" value="${esc(d.customerAddress || '')}" placeholder="${t('deliveryAddressPlaceholder')}">
   </div>
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('company')}</label>
-      <select id="f-company" class="form-select"><option value="">— Select Company —</option>${companyOptions}</select>
+      <select id="f-company" class="form-select"><option value="">${t('selectCompanyOption')}</option>${companyOptions}</select>
     </div>
     <div class="form-group">
       <label class="form-label">${t('contractor')}</label>
-      <select id="f-contractor" class="form-select"><option value="">— None —</option>${contractorOptions}</select>
+      <select id="f-contractor" class="form-select"><option value="">${t('noneOption')}</option>${contractorOptions}</select>
     </div>
   </div>
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('driver')}</label>
-      <select id="f-driver" class="form-select"><option value="">— None —</option>${driverOptions}</select>
+      <select id="f-driver" class="form-select"><option value="">${t('noneOption')}</option>${driverOptions}</select>
     </div>
     <div class="form-group">
       <label class="form-label">${t('status')}</label>
       <select id="f-status" class="form-select" onchange="onStatusChange()">
-        <option value="">— Select Status —</option>
+        <option value="">${t('selectStatusOption')}</option>
         ${statusOptions}
       </select>
     </div>
@@ -323,47 +620,34 @@ function shipmentFormHTML(data) {
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('priceUSD')}</label>
-      <input type="number" step="0.01" id="f-pricedol" class="form-input" value="${d.priceDollar || ''}" placeholder="0.00" oninput="calcLeb()">
+      <input type="number" step="0.01" id="f-pricedol" class="form-input" value="${d.priceDollar || ''}" placeholder="0.00">
     </div>
     <div class="form-group">
-      <label class="form-label">${t('priceLL')} — auto</label>
-      <input type="number" id="f-priceleb" class="form-input" value="${d.priceLeb || ''}" placeholder="Auto from $ × rate">
+      <label class="form-label">${t('priceLL')}</label>
+      <input type="number" id="f-priceleb" class="form-input" value="${d.priceLeb || ''}" placeholder="0.00">
     </div>
   </div>
   <div class="form-row">
     <div class="form-group">
-      <label class="form-label">Delivery Cost ($)</label>
-      <input type="number" step="0.01" id="f-delivery"     class="form-input" value="${d.deliveryCost         || ''}" placeholder="0.00">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Driver Cost ($)</label>
+      <label class="form-label">${t('driverCostLabel')}</label>
       <input type="number" step="0.01" id="f-drivercost"   class="form-input" value="${d.driverDeliveryCost   || ''}" placeholder="0.00">
     </div>
-  </div>
-  <div class="form-row">
     <div class="form-group">
-      <label class="form-label">Contractor Cost ($)</label>
+      <label class="form-label">${t('contractorCostLabel')}</label>
       <input type="number" step="0.01" id="f-contractorcost" class="form-input" value="${d.contractorDeliveryCost || ''}" placeholder="0.00">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Delivery Profit ($)</label>
-      <input type="number" step="0.01" id="f-profit"       class="form-input" value="${d.deliveryProfit       || ''}" placeholder="0.00">
     </div>
   </div>
   <div class="form-group">
-    <label class="form-label">Description / Notes</label>
+    <label class="form-label">${t('deliveryProfitLabel')}</label>
+    <input type="number" step="0.01" id="f-profit"       class="form-input" value="${d.deliveryProfit       || ''}" placeholder="0.00">
+  </div>
+  <div class="form-group">
+    <label class="form-label">${t('descriptionNotesLabel')}</label>
     <textarea id="f-desc" class="form-textarea" placeholder="${t('descPlaceholder')}">${esc(d.description || '')}</textarea>
   </div>
   <div style="background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:12px;color:var(--text-3);">
-    💡 Dollar rate: <strong style="color:var(--amber);font-family:var(--mono);">${formatNum(dollPrice)} L.L.</strong> — used for auto-conversion
+    💡 ${t('dollarRateLabel')} <strong style="color:var(--amber);font-family:var(--mono);">${formatNum(dollPrice)} L.L.</strong> — ${t('dollarRateNote')}
   </div>`;
-}
-
-function calcLeb() {
-  if (!dollPrice) return;
-  const dol   = parseFloat(document.getElementById('f-pricedol')?.value) || 0;
-  const lebEl = document.getElementById('f-priceleb');
-  if (lebEl && dol > 0) lebEl.value = Math.round(dol * dollPrice);
 }
 
 /** Show/hide the Returned-Paid delivery cost field based on selected status */
@@ -402,7 +686,6 @@ async function saveShipment() {
     status:                document.getElementById('f-status')?.value       || 'Pending',
     priceDollar:           parseFloat(document.getElementById('f-pricedol')?.value)       || 0,
     priceLeb:              parseFloat(document.getElementById('f-priceleb')?.value)       || 0,
-    deliveryCost:          parseFloat(document.getElementById('f-delivery')?.value)       || 0,
     driverDeliveryCost:    parseFloat(document.getElementById('f-drivercost')?.value)     || 0,
     contractorDeliveryCost:parseFloat(document.getElementById('f-contractorcost')?.value) || 0,
     deliveryProfit:        parseFloat(document.getElementById('f-profit')?.value)         || 0,
@@ -424,7 +707,7 @@ async function saveShipment() {
     }
     closeModal('modal-shipment');
     if (currentPage === 'shipments') renderShipments();
-    else if (currentPage === 'new-shipment') navigate('shipments');
+    else if (currentPage === 'dashboard') renderDashboard();
     editingId = null;
   } catch (e) {
     console.error(e);
@@ -546,7 +829,7 @@ async function renderArchive() {
 
   const showProfit = can('canViewProfit');
   content.innerHTML = `
-  ${pageHeader(t('archive'), [t('operations')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveCSV()">⬇ Export</button>` : '')}
+  ${pageHeader(t('archive'), [t('operations')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveCSV()">${ICONS.excelFile} Export</button>` : '')}
   <div class="toolbar">
   <div class="filter-bar">
     <div class="table-search">
@@ -988,7 +1271,7 @@ async function renderDrivers() {
     </div>
     <div class="table-scroll desktop-table">
       <table>
-        <thead><tr><th>${t('driverName')}</th><th>${t('phone')}</th><th>${t('activeStatus')}</th><th>${t('portalColumnLabel')}</th><th>${t('actions')}</th></tr></thead>
+        <thead><tr><th>${t('driverName')}</th><th>${t('phone')}</th><th>${t('deliveryCostCol')}</th><th>${t('activeStatus')}</th><th>${t('portalColumnLabel')}</th><th>${t('actions')}</th></tr></thead>
         <tbody id="drv-tbody"></tbody>
       </table>
     </div>
@@ -1009,19 +1292,21 @@ function filterDrivers() {
   <tr>
     <td><strong>${esc(d.name||'—')}</strong></td>
     <td class="font-mono">${esc(d.phones||'—')}</td>
+    <td class="font-mono">$${formatNum(d.deliveryCost||0)}</td>
     <td>${d.active!==false ? `<span class="badge badge-green">${t('activeLabel')}</span>` : `<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</td>
     <td>${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</td>
     <td><div style="display:flex;gap:4px;">
       <button class="btn btn-ghost  btn-sm btn-icon" onclick="editDriver('${d.id}')">✏️</button>
       <button class="btn btn-danger btn-sm btn-icon" onclick="deleteDriver('${d.id}')">🗑</button>
     </div></td>
-  </tr>`).join('') || `<tr><td colspan="5" class="table-empty"><div class="empty-icon">🚗</div><p>No drivers yet</p></td></tr>`;
+  </tr>`).join('') || `<tr><td colspan="6" class="table-empty"><div class="empty-icon">🚗</div><p>No drivers yet</p></td></tr>`;
 
   if (mobile) mobile.innerHTML = list.map(d => `
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🚗 ${esc(d.name||'—')}</span>${d.active!==false?`<span class="badge badge-green">${t('activeLabel')}</span>`:`<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</div>
     <div class="mobile-card-body">
       <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(d.phones||'—')}</div></div>
+      <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(d.deliveryCost||0)}</div></div>
       <div><div class="mobile-card-label">${t('portalColumnLabel')}</div><div class="mobile-card-value">${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</div></div>
     </div>
     <div class="mobile-card-footer">
@@ -1038,7 +1323,17 @@ function driverFormHTML(d) {
     <div class="form-group" style="background:var(--bg-3);border:1px solid var(--border-2);border-radius:var(--radius);padding:14px;">
       <label class="form-label" style="color:var(--blue);">${ICONS.checkCircle ? '' : ''}✓ ${t('portalStatusEnabled')}</label>
       <p style="font-size:0.929rem;margin-bottom:6px;">${t('loginUsernameLabel')}: <strong class="font-mono">${esc(d.username || '—')}</strong></p>
-      <p style="font-size:0.786rem;color:var(--text-3);">${t('resetPasswordHint')} <span class="font-mono">${esc(d.loginEmail || '')}</span></p>
+      <p style="font-size:0.786rem;color:var(--text-3);margin-bottom:10px;">${t('resetPasswordHint')} <span class="font-mono">${esc(d.loginEmail || '')}</span></p>
+      ${d.plainPassword ? `
+      <div class="form-group" style="margin-bottom:10px;">
+        <label class="form-label">${t('currentPasswordLabel')}</label>
+        <div style="display:flex;gap:6px;">
+          <input type="password" id="df-current-password" class="form-input font-mono" readonly value="${esc(d.plainPassword)}" onclick="this.select()" style="flex:1;">
+          <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="toggleCurrentPasswordVisibility(this)" title="${t('showPasswordBtn')}">👁️</button>
+          <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="copyCurrentDriverPassword('${esc(d.plainPassword)}')" title="${t('copyCredentialsBtn')}">📋</button>
+        </div>
+      </div>` : ''}
+      <button type="button" class="btn btn-secondary btn-sm" onclick="resetDriverPassword('${d.id}')">${t('resetPasswordBtn')}</button>
     </div>`
     : `
     <div class="form-group" style="background:var(--bg-3);border:1px solid var(--border-2);border-radius:var(--radius);padding:14px;">
@@ -1060,6 +1355,7 @@ function driverFormHTML(d) {
   return `
   <div class="form-group"><label class="form-label">${t('driverName')} <span style="color:var(--brand)">*</span></label><input type="text" id="df-name" class="form-input" value="${esc(d.name||'')}" placeholder="Full name"></div>
   <div class="form-group"><label class="form-label">${t('phone')}</label><input type="tel" id="df-phones" class="form-input" value="${esc(d.phones||'')}" placeholder="+961..."></div>
+  <div class="form-group"><label class="form-label">${t('deliveryCostCol')}</label><input type="number" step="0.01" id="df-delcost" class="form-input" value="${d.deliveryCost||''}" placeholder="0.00"></div>
   <div class="form-group"><label class="form-label">${t('activeStatus')}</label>
     <select id="df-active" class="form-select">
       <option value="true"  ${d.active!==false?'selected':''}>${t('activeLabel')}</option>
@@ -1085,6 +1381,7 @@ async function saveDriver() {
   const name    = document.getElementById('df-name')?.value?.trim();
   if (!name) { toast('Name is required', 'error'); return; }
   const phones  = document.getElementById('df-phones')?.value || '';
+  const deliveryCost = parseFloat(document.getElementById('df-delcost')?.value) || 0;
   const active  = document.getElementById('df-active')?.value === 'true';
   const username = document.getElementById('df-username')?.value?.trim() || '';
   const password = document.getElementById('df-password')?.value || '';
@@ -1093,7 +1390,7 @@ async function saveDriver() {
   // Editing a driver that already has portal access — plain field update, no credentials shown.
   if (editingId && existing?.hasPortalAccess) {
     try {
-      await db.collection('sonick_drivers').doc(editingId).update({ name, phones, active });
+      await db.collection('sonick_drivers').doc(editingId).update({ name, phones, active, deliveryCost });
       toast(t('driverUpdated'), 'success');
       closeModal('modal-driver'); await loadCaches(); renderDrivers();
     } catch (e) { toast(t('error') + e.message, 'error'); }
@@ -1103,12 +1400,13 @@ async function saveDriver() {
   // Username/password provided — either creating a new driver with portal login,
   // or retroactively granting it to an existing one.
   if (username || password) {
-    if (!username || !password || password.length < 6) { toast(t('usernameRequired'), 'error'); return; }
+    if (!username || !password) { toast(t('usernameRequired'), 'error'); return; }
+    if (password.length < 6)    { toast(t('passwordTooShort'), 'error'); return; }
     try {
-      if (editingId) await grantPortalAccessToExistingDriver(editingId, name, phones, active, username, password);
-      else            await createDriverWithPortal(name, phones, active, username, password);
-      toast(t('portalAccessGranted'), 'success');
+      if (editingId) await grantPortalAccessToExistingDriver(editingId, name, phones, active, username, password, deliveryCost);
+      else            await createDriverWithPortal(name, phones, active, username, password, deliveryCost);
       closeModal('modal-driver'); await loadCaches(); renderDrivers();
+      showPortalCredentials({ name, username, password });
     } catch (e) {
       const msg = e.code === 'auth/email-already-in-use' ? t('usernameTaken') : (t('portalAccessFailed') + e.message);
       toast(msg, 'error');
@@ -1117,7 +1415,7 @@ async function saveDriver() {
   }
 
   // No portal credentials involved — plain create/update, exactly as before.
-  const payload = { name, phones, active };
+  const payload = { name, phones, active, deliveryCost };
   try {
     if (editingId) { if (db) await db.collection('sonick_drivers').doc(editingId).update(payload); toast(t('driverUpdated'), 'success'); }
     else { if (db) await db.collection('sonick_drivers').add(payload); else drivers_cache.push({ id: 'd' + Date.now(), ...payload }); toast(t('driverAdded'), 'success'); }
@@ -1130,6 +1428,48 @@ async function deleteDriver(id) {
     try { if (db) await db.collection('sonick_drivers').doc(id).delete(); await loadCaches(); toast(t('deleted'), 'success'); renderDrivers(); }
     catch (e) { toast(t('error') + e.message, 'error'); }
   });
+}
+
+/** Reset a portal-enabled driver's password. Firebase's client SDK can't change another
+ *  user's password directly (that needs Admin SDK / a Cloud Function, which this project
+ *  doesn't have) — so this reuses the same account-rotation trick as
+ *  grantPortalAccessToExistingDriver: a new Auth account + password is created under the
+ *  same username, every shipment/archive reference is repointed to it, and the old
+ *  Firestore doc (and its now-orphaned Auth account) is dropped. Net effect for the driver
+ *  is exactly a password reset — same username, new password. */
+function resetDriverPassword(id) {
+  const d = (window._drivers || drivers_cache).find(x => x.id === id);
+  if (!d) return;
+  promptInput(
+    { title: t('resetPasswordTitle'), message: t('resetPasswordPrompt'), type: 'password', placeholder: '••••••••' },
+    async (newPassword) => {
+      if (!newPassword || newPassword.length < 6) { toast(t('passwordTooShort'), 'error'); return; }
+      try {
+        await grantPortalAccessToExistingDriver(d.id, d.name, d.phones, d.active !== false, d.username, newPassword, d.deliveryCost);
+        closeModal('modal-driver');
+        await loadCaches(); renderDrivers();
+        showPortalCredentials({ name: d.name, username: d.username, password: newPassword });
+      } catch (e) {
+        toast(t('portalAccessFailed') + e.message, 'error');
+      }
+    },
+    () => { /* cancelled — nothing to revert */ }
+  );
+}
+
+/** Toggle the masked/plaintext view of the current-password field in the Edit Driver panel. */
+function toggleCurrentPasswordVisibility(btn) {
+  const input = document.getElementById('df-current-password');
+  if (!input) return;
+  const showing = input.type === 'text';
+  input.type = showing ? 'password' : 'text';
+  btn.textContent = showing ? '👁️' : '🙈';
+}
+
+/** Copy a driver's stored plaintext password to the clipboard from the Edit Driver panel. */
+async function copyCurrentDriverPassword(password) {
+  try { await navigator.clipboard.writeText(password); toast(t('copiedToClipboard'), 'success'); }
+  catch (e) { toast(t('copyFailed'), 'error'); }
 }
 
 // ===================================================
