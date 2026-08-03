@@ -1,0 +1,488 @@
+{
+  "_sonickBackup": true,
+  "exportedAt": "2026-07-27T09:43:41.678Z",
+  "appVersion": "2.0.0-web",
+  "collections": {
+    "sonick_shipments": [
+      {
+        "id": "2fAAWb3B65zYIqD2LoXi",
+        "status": "Pending",
+        "description": "",
+        "deliveryCost": 0,
+        "customerAddress": "",
+        "date": "2026-07-26",
+        "companyName": "Adam tfaily",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "customerPhone": "",
+        "driverId": "",
+        "shipNumber": 1001,
+        "contractorId": "",
+        "contractorDeliveryCost": 0,
+        "customerName": "حسين العوطه",
+        "deliveryProfit": 2.5,
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "contractorName": "",
+        "priceLeb": 0,
+        "updatedAt": "2026-07-26T22:56:34.580Z",
+        "returnedDeliveryCost": 4,
+        "createdBy": "9VluMeWsHKhaFDKzsN6jmuB9y3L2",
+        "priceDollar": 22,
+        "driverName": "",
+        "createdAt": "2026-07-26T13:03:23.982Z",
+        "driverDeliveryCost": 1
+      },
+      {
+        "id": "D1F4cSTDapsK7ob9qRe0",
+        "customerPhone": "",
+        "companyId": "mMxx27ZDRmguc0GUmSFb",
+        "shipNumber": 1212,
+        "driverId": "lOfG7xFNoThB2ixVxBg0",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "description": "",
+        "status": "Cancelled",
+        "customerAddress": "",
+        "date": "2026-07-27",
+        "companyName": "5star",
+        "updatedAt": "2026-07-27T09:41:18.216Z",
+        "priceLeb": 0,
+        "returnedDeliveryCost": 0,
+        "driverName": "حسين مخ",
+        "driverDeliveryCost": 0,
+        "createdAt": "2026-07-27T09:27:36.541Z",
+        "priceDollar": 120,
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "customerName": "فلان",
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "deliveryProfit": 2.5,
+        "contractorName": ""
+      },
+      {
+        "id": "GRIghskySzk3Z1oRXey5",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "driverId": "",
+        "shipNumber": 111,
+        "customerPhone": "",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "companyName": "Adam tfaily",
+        "customerAddress": "",
+        "date": "2026-07-26",
+        "description": "",
+        "status": "Returned-Unpaid",
+        "driverName": "",
+        "createdAt": "2026-07-26T23:46:24.536Z",
+        "driverDeliveryCost": 0,
+        "priceDollar": 11,
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "returnedDeliveryCost": 0,
+        "updatedAt": "2026-07-27T09:41:46.972Z",
+        "priceLeb": 0,
+        "contractorName": "",
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "deliveryProfit": 2.5,
+        "customerName": ""
+      },
+      {
+        "id": "Lv19AUCifvWyvvWXDrPc",
+        "driverDeliveryCost": 0,
+        "driverName": "",
+        "createdAt": "2026-07-26T23:40:25.668Z",
+        "priceDollar": 11,
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "returnedDeliveryCost": 0,
+        "updatedAt": "2026-07-27T09:41:50.122Z",
+        "priceLeb": 0,
+        "contractorName": "",
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "deliveryProfit": 2.5,
+        "customerName": "gdf",
+        "contractorId": "",
+        "contractorDeliveryCost": 0,
+        "driverId": "",
+        "shipNumber": 1005,
+        "customerPhone": "",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "companyName": "Adam tfaily",
+        "customerAddress": "",
+        "date": "2026-07-26",
+        "description": "",
+        "status": "Returned-Paid"
+      },
+      {
+        "id": "OzYBcQ0RwFhQ2WyypiRK",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "shipNumber": 1003,
+        "driverId": "UbyVaHt8Uhb2qtjlb3i4",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "customerPhone": "44556666",
+        "companyName": "Adam tfaily",
+        "date": "2026-07-26",
+        "customerAddress": "",
+        "status": "Pending",
+        "description": "",
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "priceDollar": 250,
+        "driverDeliveryCost": 0,
+        "driverName": "عماد شموري",
+        "createdAt": "2026-07-26T23:25:25.566Z",
+        "returnedDeliveryCost": 0,
+        "priceLeb": 0,
+        "contractorName": "",
+        "deliveryProfit": 2.5,
+        "customerName": "علتان"
+      },
+      {
+        "id": "bjfIoZ84F151oYCfwL43",
+        "date": "2026-07-26",
+        "customerAddress": "",
+        "companyName": "",
+        "status": "Pending",
+        "description": "",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "companyId": "",
+        "customerPhone": "7668877",
+        "shipNumber": 1004,
+        "driverId": "UbyVaHt8Uhb2qtjlb3i4",
+        "deliveryProfit": 0,
+        "contractorName": "",
+        "customerName": "فلان",
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "priceDollar": 22,
+        "createdAt": "2026-07-26T23:26:32.258Z",
+        "driverName": "عماد شموري",
+        "driverDeliveryCost": 0,
+        "priceLeb": 0,
+        "returnedDeliveryCost": 0
+      },
+      {
+        "id": "i6rTywsMvv9TLeiYohwN",
+        "contractorName": "",
+        "deliveryProfit": 2.5,
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "customerName": "",
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "priceDollar": 50,
+        "driverDeliveryCost": 0,
+        "driverName": "",
+        "createdAt": "2026-07-27T09:31:54.032Z",
+        "returnedDeliveryCost": 0,
+        "priceLeb": 0,
+        "updatedAt": "2026-07-27T09:41:03.919Z",
+        "companyName": "B speed",
+        "date": "2026-07-27",
+        "customerAddress": "",
+        "status": "Delivered",
+        "description": "",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "driverId": "",
+        "shipNumber": 5221,
+        "companyId": "L8VfeW7AtldfwfRHwLEo",
+        "customerPhone": ""
+      },
+      {
+        "id": "pedglPSX0YJR1XLBau6E",
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "deliveryProfit": 2.5,
+        "contractorName": "",
+        "customerName": "فلان",
+        "driverDeliveryCost": 0,
+        "createdAt": "2026-07-26T23:23:00.489Z",
+        "driverName": "عماد شموري",
+        "priceDollar": 10,
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "updatedAt": "2026-07-26T23:24:57.704Z",
+        "priceLeb": 0,
+        "returnedDeliveryCost": 0,
+        "customerAddress": "",
+        "date": "2026-07-26",
+        "companyName": "Adam tfaily",
+        "status": "Pending",
+        "description": "",
+        "contractorId": "",
+        "contractorDeliveryCost": 0,
+        "customerPhone": "76554466",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "shipNumber": 1002,
+        "driverId": "UbyVaHt8Uhb2qtjlb3i4"
+      },
+      {
+        "id": "yEamzyIInt7geKrXPkJD",
+        "contractorDeliveryCost": 0,
+        "contractorId": "",
+        "shipNumber": 111,
+        "driverId": "",
+        "companyId": "ONKsfjl8bDyXqmX4z3Hk",
+        "customerPhone": "",
+        "companyName": "Adam tfaily",
+        "date": "2026-07-26",
+        "customerAddress": "",
+        "description": "",
+        "status": "Delayed",
+        "priceDollar": 10,
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "driverDeliveryCost": 0,
+        "driverName": "",
+        "createdAt": "2026-07-26T23:46:35.284Z",
+        "returnedDeliveryCost": 0,
+        "priceLeb": 0,
+        "updatedAt": "2026-07-27T09:41:31.335Z",
+        "contractorName": "",
+        "deliveryProfit": 2.5,
+        "updatedBy": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "customerName": ""
+      }
+    ],
+    "sonick_archive": [],
+    "sonick_companies": [
+      {
+        "id": "2QAI8aGJkix8fjiUj3uL",
+        "deliveryCost": 5,
+        "name": "Magnom",
+        "phones": "71201464"
+      },
+      {
+        "id": "6DGEfMxqLu7QYaQ6orXo",
+        "phones": "70380464",
+        "deliveryCost": 5,
+        "name": "Elissa shopping"
+      },
+      {
+        "id": "Bpu8cPtrkbqUl0b8eskp",
+        "phones": "70467624",
+        "name": "wasalna cash",
+        "deliveryCost": 2.25
+      },
+      {
+        "id": "CwQkSEkagnOvMD4n3ghk",
+        "phones": "71298028",
+        "name": "Rabih delivery",
+        "deliveryCost": 2.5
+      },
+      {
+        "id": "G9fy5LLDWwuJJyLBpHgh",
+        "phones": "70962861",
+        "deliveryCost": 2.5,
+        "name": "BL bareed"
+      },
+      {
+        "id": "GpRHgUrA3cVd9HhQGj5g",
+        "phones": "70231465",
+        "name": "الاتقان",
+        "deliveryCost": 5
+      },
+      {
+        "id": "HbfvXRPkoHUlfU64X8Ld",
+        "phones": "71815851",
+        "name": "مجوهرات المرجان",
+        "deliveryCost": 5
+      },
+      {
+        "id": "L8VfeW7AtldfwfRHwLEo",
+        "phones": "03484973",
+        "deliveryCost": 2.5,
+        "name": "B speed"
+      },
+      {
+        "id": "ONKsfjl8bDyXqmX4z3Hk",
+        "phones": "81717434",
+        "name": "Adam tfaily",
+        "deliveryCost": 2.5
+      },
+      {
+        "id": "PFsdMNFWqDNeeIGvotdZ",
+        "deliveryCost": 5,
+        "name": "الادوات الاوروبية",
+        "phones": "79078835"
+      },
+      {
+        "id": "QuopjiqYi5w2oLnQeKPd",
+        "phones": "81813323",
+        "name": "Hesham top serv",
+        "deliveryCost": 2.5
+      },
+      {
+        "id": "RjRq3RtKtHCGJJWlQyAA",
+        "name": "Bekaa 3d",
+        "deliveryCost": 5,
+        "phones": "71347513"
+      },
+      {
+        "id": "SwMfzvQiMnC3bDaJSJhT",
+        "name": "Baby chik",
+        "deliveryCost": 5,
+        "phones": "71625653"
+      },
+      {
+        "id": "TglWigE9wagvxRICjwhd",
+        "phones": "76696196",
+        "deliveryCost": 2.25,
+        "name": "Delta delivery"
+      },
+      {
+        "id": "WcexRgYX71mSxPSIlAvq",
+        "phones": "03648058",
+        "deliveryCost": 5,
+        "name": "Shabab"
+      },
+      {
+        "id": "YZnYI8cOKOwQeByCM0PE",
+        "phones": "79166355",
+        "deliveryCost": 2.5,
+        "name": "City drop"
+      },
+      {
+        "id": "cl0IxwSe8eO0u6xUrEg8",
+        "phones": "76639449",
+        "name": "fast riders",
+        "deliveryCost": 2.25
+      },
+      {
+        "id": "fiGsYRkox3jNznm7ZLvO",
+        "deliveryCost": 4,
+        "name": "ZUMURRUD",
+        "phones": "71093079"
+      },
+      {
+        "id": "fpOumgNNlZQeK203Wa2y",
+        "deliveryCost": 2.5,
+        "name": "Hajar speed drop",
+        "phones": "70884176"
+      },
+      {
+        "id": "gtINfCErU9LVIRzGBWQT",
+        "name": "yalla delivery",
+        "deliveryCost": 2,
+        "phones": "79107890"
+      },
+      {
+        "id": "iX3XQQGLZW1gzZ9EFxng",
+        "phones": "81932611",
+        "name": "kabbany AK delivery",
+        "deliveryCost": 2.25
+      },
+      {
+        "id": "mMxx27ZDRmguc0GUmSFb",
+        "deliveryCost": 2.5,
+        "name": "5star",
+        "phones": "71252033"
+      },
+      {
+        "id": "nIjD9F4R0oiSiIy9nUMz",
+        "phones": "81989074",
+        "name": "Samar rbah",
+        "deliveryCost": 5
+      },
+      {
+        "id": "nWtIeVRaTRQceBtusbGm",
+        "name": "Muscle fuel",
+        "deliveryCost": 5,
+        "phones": "70781999"
+      },
+      {
+        "id": "npvPaOyDW8CmI1bVcepR",
+        "deliveryCost": 5,
+        "name": "Randa trad",
+        "phones": "71989669"
+      },
+      {
+        "id": "oWx9hQcD8ZQEkN8fZXZ6",
+        "phones": "70910105",
+        "name": "MR driver",
+        "deliveryCost": 2.5
+      },
+      {
+        "id": "ztwcr3sj39OcFYR8vgok",
+        "phones": "70089599",
+        "name": "xds delivery",
+        "deliveryCost": 2.5
+      }
+    ],
+    "sonick_drivers": [
+      {
+        "id": "1JbId2pspBBjC3jAPc06",
+        "phones": "70749348",
+        "active": true,
+        "name": "مهدي الساحلي"
+      },
+      {
+        "id": "1Sogyhd09rChV1koLVJz",
+        "name": "رضا مصطفى",
+        "active": true,
+        "phones": "03473406"
+      },
+      {
+        "id": "2QKpAKQ5yMJz7N9sGDGg",
+        "active": true,
+        "name": "جميل عباس",
+        "deliveryCost": 1,
+        "phones": "70906863"
+      },
+      {
+        "id": "8SoPEL6Fv8gXL04rSCa7",
+        "phones": "71862553",
+        "name": "علي الفيتروني",
+        "active": true
+      },
+      {
+        "id": "J18FCRgGLRyuiXedScr0",
+        "phones": "03103726",
+        "active": true,
+        "name": "نادر تعلبايا"
+      },
+      {
+        "id": "UNrW1nAxBmpJT1bG7BiP",
+        "phones": "81615743",
+        "active": true,
+        "name": "حسان غنوم"
+      },
+      {
+        "id": "UbyVaHt8Uhb2qtjlb3i4",
+        "active": true,
+        "name": "عماد شموري",
+        "phones": "81938344"
+      },
+      {
+        "id": "Z0VdBQla1CJg7zpEdpQ6",
+        "phones": "71703370",
+        "active": true,
+        "name": "علي الرضا عباس"
+      },
+      {
+        "id": "lOfG7xFNoThB2ixVxBg0",
+        "active": true,
+        "name": "حسين مخ",
+        "phones": "71553768"
+      }
+    ],
+    "sonick_billtypes": [],
+    "sonick_payments": [],
+    "sonick_users": [
+      {
+        "id": "9VluMeWsHKhaFDKzsN6jmuB9y3L2",
+        "role": "admin",
+        "active": true,
+        "displayName": "Jamil",
+        "createdAt": "2026-06-11T15:00:54.750Z",
+        "email": "jamil@sonick.com",
+        "createdBy": "tUZnvnP02AVDg7RySfXnKmdyBa03"
+      },
+      {
+        "id": "tUZnvnP02AVDg7RySfXnKmdyBa03",
+        "role": "admin",
+        "active": true,
+        "displayName": "Jamil",
+        "email": "admin@sonick.com"
+      }
+    ],
+    "sonick_settings": [
+      {
+        "id": "general",
+        "dollarRate": 90000
+      }
+    ]
+  }
+}

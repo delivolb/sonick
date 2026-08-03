@@ -18,7 +18,7 @@ function showApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
   setupUI();
-  navigate('dashboard');
+  navigate('home');
 }
 
 function setupUI() {
@@ -73,6 +73,7 @@ function navigate(page) {
   });
 
   const titles = {
+    home:           t('home'),
     dashboard:      t('dashboard'),    shipments: t('shipments'),
     archive:        t('archive'),
     debts:          t('debtsPayments'),general:   t('generalReport'),
@@ -86,6 +87,7 @@ function navigate(page) {
   content.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;padding:60px;"><div class="spinner"></div></div>';
 
   const routes = {
+    home:           renderHome,
     dashboard:      renderDashboard,
     shipments:      renderShipments,
     archive:        renderArchive,
@@ -214,11 +216,62 @@ function cancelPromptModal() {
   if (cb) cb();
 }
 
+let _withdrawDetailsCancelHandler = null;
+
+/** Show a small form modal to capture the refunded amount ($ and L.L.) whenever an order's
+ *  status is set to Withdrawn — a customer-initiated cancellation/return of the order itself.
+ *  This is unrelated to the Returned-Unpaid/Returned-Paid statuses, which track a failed
+ *  delivery being brought back and whether the driver's return trip has been paid for.
+ *  Used by the inline status editor and the bulk-status bar. */
+function promptWithdrawAmount(defaults = {}, onConfirm, onCancel) {
+  document.getElementById('modal-return-title').textContent   = t('withdrawOrderTitle');
+  document.getElementById('modal-return-message').textContent = t('withdrawOrderMsg');
+  document.getElementById('modal-return-usd-label').textContent = t('withdrawnAmountUSD');
+  document.getElementById('modal-return-lbp-label').textContent = t('withdrawnAmountLL');
+
+  const usdInput = document.getElementById('ret-amount-usd');
+  const lbpInput = document.getElementById('ret-amount-lbp');
+
+  usdInput.value = defaults.withdrawnAmountDollar || defaults.priceDollar || '';
+  lbpInput.value = defaults.withdrawnAmountLeb    || defaults.priceLeb    || '';
+
+  _withdrawDetailsCancelHandler = onCancel || null;
+
+  const confirm = () => {
+    _withdrawDetailsCancelHandler = null;
+    closeModal('modal-return-details');
+    onConfirm({
+      withdrawnAmountDollar: parseFloat(usdInput.value) || 0,
+      withdrawnAmountLeb:    parseFloat(lbpInput.value) || 0,
+    });
+  };
+  document.getElementById('modal-return-ok').onclick = confirm;
+
+  const handleKey = e => {
+    if (e.key === 'Enter')  { e.preventDefault(); confirm(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancelWithdrawDetailsModal(); }
+  };
+  usdInput.onkeydown = handleKey;
+  lbpInput.onkeydown = handleKey;
+
+  openModal('modal-return-details');
+  setTimeout(() => { usdInput.focus(); usdInput.select(); }, 50);
+}
+
+/** Close the withdraw-amount modal via Cancel/✕/backdrop/Escape, firing its onCancel callback. */
+function cancelWithdrawDetailsModal() {
+  closeModal('modal-return-details');
+  const cb = _withdrawDetailsCancelHandler;
+  _withdrawDetailsCancelHandler = null;
+  if (cb) cb();
+}
+
 // Close modals by clicking the backdrop
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', e => {
     if (e.target !== overlay) return;
     if (overlay.id === 'modal-prompt') cancelPromptModal();
+    else if (overlay.id === 'modal-return-details') cancelWithdrawDetailsModal();
     else overlay.classList.remove('open');
   });
 });
@@ -315,6 +368,7 @@ const STATUS_CONFIG = {
   'Delayed':         { key: 'statusDelayed',        cls: 'badge-darkblue', icon: '🕐' },
   'Returned-Unpaid': { key: 'statusReturnedUnpaid', cls: 'badge-orange',   icon: '↩'  },
   'Returned-Paid':   { key: 'statusReturnedPaid',   cls: 'badge-yellow',   icon: '↩'  },
+  'Withdrawn':       { key: 'statusWithdrawn',       cls: 'badge-purple',   icon: '↺'  },
 };
 
 /** All status keys in order — used for <select> dropdowns */
@@ -390,6 +444,7 @@ const EXPORT_STATUS_STYLE = {
   'Delayed':          { fill: 'FFE9EDFF', font: 'FF4F6EF5' },
   'Returned-Unpaid':  { fill: 'FFFFF1E0', font: 'FFB85C00' },
   'Returned-Paid':    { fill: 'FFF1FBD9', font: 'FF6B8E00' },
+  'Withdrawn':        { fill: 'FFF3EBFF', font: 'FF8B3DFF' },
 };
 
 /** Best-effort JS Date out of a shipment's date/createdAt field (string or Firestore
@@ -423,10 +478,66 @@ function askExportFilename(defaultName) {
   });
 }
 
-async function exportExcel(defaultName) {
-  const ships      = window._allShips || [];
+/** Master registry of every column the shipments export (Excel + PDF) can include, in its
+ *  default order. Settings → Export Columns lets an admin hide/show and reorder these; this
+ *  array is the fallback whenever nothing has been saved yet, and the source of the label/
+ *  width/format for every saved column key.
+ *  format governs value formatting in BOTH exports — 'dollar' → "$" + 2-decimal; 'leb' → plain
+ *  thousands-grouped number; 'status' / 'date' are derived, not read straight off the record.
+ *  total: true columns get summed into the export's totals row. profitOnly columns are only
+ *  ever included for users with canViewProfit, regardless of the saved visibility flag. */
+const EXPORT_COLUMN_DEFS = [
+  { key: 'shipNumber',            label: 'Ship #',           width: 10, format: 'text'   },
+  { key: 'customerName',          label: 'Customer',         width: 20, format: 'text'   },
+  { key: 'customerPhone',         label: 'Phone',            width: 14, format: 'text'   },
+  { key: 'customerAddress',       label: 'Address',          width: 24, format: 'text'   },
+  { key: 'companyName',           label: 'Company',          width: 16, format: 'text'   },
+  { key: 'driverName',            label: 'Driver',           width: 16, format: 'text'   },
+  { key: 'contractorName',        label: 'Contractor',       width: 16, format: 'text'   },
+  { key: 'statusLabel',           label: 'Status',           width: 18, format: 'status' },
+  { key: 'priceDollar',           label: 'Price ($)',        width: 12, format: 'dollar', total: true },
+  { key: 'priceLeb',              label: 'Price (L.L.)',     width: 14, format: 'leb',    total: true },
+  { key: 'deliveryCost',          label: 'Delivery Cost',    width: 14, format: 'dollar' },
+  { key: 'driverDeliveryCost',    label: 'Driver Cost',      width: 13, format: 'dollar' },
+  { key: 'contractorDeliveryCost',label: 'Contractor Cost',  width: 15, format: 'dollar' },
+  { key: 'withdrawnAmountDollar', label: 'Withdrawn ($)',    width: 13, format: 'dollar', total: true },
+  { key: 'withdrawnAmountLeb',    label: 'Withdrawn (L.L.)', width: 14, format: 'leb',    total: true },
+  { key: 'date',                  label: 'Date',             width: 14, format: 'date'   },
+  { key: 'description',           label: 'Description',      width: 28, format: 'text'   },
+  { key: 'deliveryProfit',        label: 'Profit ($)',       width: 12, format: 'dollar', total: true, profitOnly: true },
+];
+
+/** Merge EXPORT_COLUMN_DEFS with the saved order/visibility (exportColumnsConfig, loaded in
+ *  loadCaches() and refreshed whenever Settings is opened) — keeping EVERY column, including
+ *  hidden ones, so the Settings picker can still show and re-enable them. Any column added to
+ *  EXPORT_COLUMN_DEFS after a config was saved is appended (visible) so new columns don't get
+ *  silently lost. Falls back to the full default set, in registry order, if nothing is saved. */
+function resolveExportColumnsFull() {
+  const byKey = new Map(EXPORT_COLUMN_DEFS.map(c => [c.key, c]));
+  if (Array.isArray(exportColumnsConfig) && exportColumnsConfig.length) {
+    const merged = exportColumnsConfig
+      .filter(s => byKey.has(s.key))
+      .map(s => ({ ...byKey.get(s.key), visible: s.visible !== false }));
+    const known = new Set(merged.map(c => c.key));
+    EXPORT_COLUMN_DEFS.forEach(c => { if (!known.has(c.key)) merged.push({ ...c, visible: true }); });
+    return merged;
+  }
+  return EXPORT_COLUMN_DEFS.map(c => ({ ...c, visible: true }));
+}
+
+/** The ordered, filtered column list an export should actually use right now: the saved
+ *  order minus anything hidden, and always dropping the profit column for users without
+ *  canViewProfit regardless of the saved flag. */
+function getActiveExportColumns() {
   const showProfit = can('canViewProfit');
+  return resolveExportColumnsFull().filter(c => c.visible && (!c.profitOnly || showProfit));
+}
+
+async function exportExcel(defaultName) {
+  const ships = window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
+  const columns = getActiveExportColumns();
+  if (!columns.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
   const filename  = await askExportFilename(suggested);
@@ -440,24 +551,6 @@ async function exportExcel(defaultName) {
     return (b.shipNumber || 0) - (a.shipNumber || 0);
   });
 
-  const columns = [
-    { header: 'Ship #',          key: 'shipNumber',    width: 10 },
-    { header: 'Customer',        key: 'customerName',  width: 20 },
-    { header: 'Phone',           key: 'customerPhone', width: 14 },
-    { header: 'Address',         key: 'customerAddress', width: 24 },
-    { header: 'Company',         key: 'companyName',   width: 16 },
-    { header: 'Driver',          key: 'driverName',    width: 16 },
-    { header: 'Contractor',      key: 'contractorName',width: 16 },
-    { header: 'Status',          key: 'statusLabel',   width: 18 },
-    { header: 'Price ($)',       key: 'priceDollar',   width: 12 },
-    { header: 'Price (L.L.)',    key: 'priceLeb',      width: 14 },
-    { header: 'Delivery Cost',   key: 'deliveryCost',  width: 14 },
-    { header: 'Driver Cost',     key: 'driverDeliveryCost', width: 13 },
-    { header: 'Contractor Cost', key: 'contractorDeliveryCost', width: 15 },
-    { header: 'Date',            key: 'date',          width: 14 },
-    { header: 'Description',     key: 'description',   width: 28 },
-  ];
-  if (showProfit) columns.push({ header: 'Profit ($)', key: 'deliveryProfit', width: 12 });
   const colCount = columns.length;
 
   const workbook  = new ExcelJS.Workbook();
@@ -490,7 +583,7 @@ async function exportExcel(defaultName) {
   // ---- Header row ----
   const headerRowIdx = 3;
   const headerRow = sheet.getRow(headerRowIdx);
-  columns.forEach((c, i) => { headerRow.getCell(i + 1).value = c.header; sheet.getColumn(i + 1).width = c.width; });
+  columns.forEach((c, i) => { headerRow.getCell(i + 1).value = c.label; sheet.getColumn(i + 1).width = c.width; });
   headerRow.eachCell(cell => {
     cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3A54D6' } };
@@ -503,13 +596,12 @@ async function exportExcel(defaultName) {
   headerRow.height = 22;
 
   // ---- Data rows, tinted by status ----
-  const priceCols = new Set(['priceDollar', 'deliveryCost', 'driverDeliveryCost', 'contractorDeliveryCost', 'deliveryProfit']);
   sorted.forEach(s => {
     const style = EXPORT_STATUS_STYLE[s.status] || EXPORT_STATUS_STYLE['Pending'];
     const rowArray = columns.map(c => {
-      if (c.key === 'statusLabel') return t(STATUS_CONFIG[s.status]?.key) || s.status || '—';
-      if (c.key === 'date')        return fmtDate(s.date || s.createdAt);
-      return s[c.key] ?? (priceCols.has(c.key) ? 0 : '');
+      if (c.format === 'status') return t(STATUS_CONFIG[s.status]?.key) || s.status || '—';
+      if (c.format === 'date')   return fmtDate(s.date || s.createdAt);
+      return s[c.key] ?? ((c.format === 'dollar' || c.format === 'leb') ? 0 : '');
     });
     const row = sheet.addRow(rowArray);
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
@@ -519,31 +611,30 @@ async function exportExcel(defaultName) {
         top: { style: 'thin', color: { argb: 'FFB8C2D9' } }, bottom: { style: 'thin', color: { argb: 'FFB8C2D9' } },
         left: { style: 'thin', color: { argb: 'FFB8C2D9' } }, right: { style: 'thin', color: { argb: 'FFB8C2D9' } },
       };
-      const key = columns[colNum - 1]?.key;
-      if (priceCols.has(key)) {
-        cell.numFmt = key === 'priceLeb' ? '#,##0' : '#,##0.00';
+      const col = columns[colNum - 1];
+      if (col?.format === 'dollar' || col?.format === 'leb') {
+        cell.numFmt = col.format === 'leb' ? '#,##0' : '#,##0.00';
       }
-      if (key === 'statusLabel') {
+      if (col?.format === 'status') {
         cell.font = { bold: true, color: { argb: style.font } };
       }
     });
   });
 
-  // ---- Totals row ----
+  // ---- Totals row ---- (robust to any saved column order/visibility: sums every column
+  // flagged `total` in EXPORT_COLUMN_DEFS at its current position, and puts the label in
+  // the first non-summed column so a reordered "Price ($)" column can never collide with it)
   const totalsRowIdx = sheet.rowCount + 1;
   const totalsRow = sheet.getRow(totalsRowIdx);
-  sheet.mergeCells(totalsRowIdx, 1, totalsRowIdx, 7);
-  const totalsLabel = totalsRow.getCell(1);
-  totalsLabel.value = `TOTAL (${sorted.length} shipments)`;
-  totalsLabel.alignment = { horizontal: 'center', vertical: 'middle' };
-  const priceDollarColIdx = columns.findIndex(c => c.key === 'priceDollar') + 1;
-  const priceLebColIdx    = columns.findIndex(c => c.key === 'priceLeb') + 1;
-  const profitColIdx      = showProfit ? columns.findIndex(c => c.key === 'deliveryProfit') + 1 : 0;
-  totalsRow.getCell(priceDollarColIdx).value = sorted.reduce((sum, s) => sum + (Number(s.priceDollar) || 0), 0);
-  totalsRow.getCell(priceLebColIdx).value    = sorted.reduce((sum, s) => sum + (Number(s.priceLeb) || 0), 0);
-  if (profitColIdx > 0) {
-    totalsRow.getCell(profitColIdx).value = sorted.reduce((sum, s) => sum + (Number(s.deliveryProfit) || 0), 0);
-  }
+  const labelColIdx = (columns.findIndex(c => !c.total) + 1) || 1;
+  totalsRow.getCell(labelColIdx).value = `TOTAL (${sorted.length} shipments)`;
+  columns.forEach((c, i) => {
+    if (!c.total) return;
+    const sum = sorted.reduce((total, s) => total + (Number(s[c.key]) || 0), 0);
+    const cell = totalsRow.getCell(i + 1);
+    cell.value  = sum;
+    cell.numFmt = c.format === 'leb' ? '#,##0' : '#,##0.00';
+  });
   totalsRow.eachCell({ includeEmpty: true }, cell => {
     cell.font = { bold: true, color: { argb: 'FF1F2937' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EDFF' } };
@@ -554,12 +645,6 @@ async function exportExcel(defaultName) {
     };
   });
   totalsRow.height = 20;
-  [priceDollarColIdx, priceLebColIdx, profitColIdx].forEach(idx => {
-    if (idx > 0) {
-      const c = totalsRow.getCell(idx);
-      c.numFmt = idx === priceLebColIdx ? '#,##0' : '#,##0.00';
-    }
-  });
 
   // ---- Filter + polish ----
   sheet.autoFilter = { from: { row: headerRowIdx, column: 1 }, to: { row: headerRowIdx, column: colCount } };
@@ -591,9 +676,10 @@ function imageToDataURL(url) {
  *  then slice that image across as many A4 pages as needed. */
 async function exportPDF(defaultName) {
   if (!window.jspdf || !window.html2canvas) { toast(t('pdfLibMissing'), 'error'); return; }
-  const ships      = window._allShips || [];
-  const showProfit = can('canViewProfit');
+  const ships = window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
+  const cols = getActiveExportColumns();
+  if (!cols.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
   const filename  = await askExportFilename(suggested);
@@ -609,24 +695,7 @@ async function exportPDF(defaultName) {
     return (b.shipNumber || 0) - (a.shipNumber || 0);
   });
 
-  const cols = [
-    { label: 'Ship #',     key: 'shipNumber' },
-    { label: 'Customer',   key: 'customerName' },
-    { label: 'Phone',      key: 'customerPhone' },
-    { label: 'Company',    key: 'companyName' },
-    { label: 'Driver',     key: 'driverName' },
-    { label: 'Contractor', key: 'contractorName' },
-    { label: 'Status',     key: 'statusLabel' },
-    { label: 'Price ($)',  key: 'priceDollar' },
-    { label: 'Price (L.L.)', key: 'priceLeb' },
-    { label: 'Date',       key: 'date' },
-  ];
-  if (showProfit) cols.push({ label: 'Profit ($)', key: 'deliveryProfit' });
-
-  const totalDollar = sorted.reduce((sum, s) => sum + (Number(s.priceDollar) || 0), 0);
-  const totalLeb    = sorted.reduce((sum, s) => sum + (Number(s.priceLeb) || 0), 0);
-  const totalProfit = sorted.reduce((sum, s) => sum + (Number(s.deliveryProfit) || 0), 0);
-  const exportedOn  = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
   let logoDataUrl = '';
   try { logoDataUrl = await imageToDataURL('assets/logo-mark.png'); } catch (e) { /* logo optional */ }
@@ -635,25 +704,25 @@ async function exportPDF(defaultName) {
     const style = EXPORT_STATUS_STYLE[s.status] || EXPORT_STATUS_STYLE['Pending'];
     const cells = cols.map(c => {
       let val;
-      if      (c.key === 'statusLabel')   val = esc(t(STATUS_CONFIG[s.status]?.key) || s.status || '—');
-      else if (c.key === 'date')          val = esc(fmtDate(s.date || s.createdAt));
-      else if (c.key === 'priceDollar')   val = '$' + formatNum(s.priceDollar || 0);
-      else if (c.key === 'priceLeb')      val = formatNum(s.priceLeb || 0);
-      else if (c.key === 'deliveryProfit')val = '$' + formatNum(s.deliveryProfit || 0);
-      else                                 val = esc(s[c.key] || '—');
-      const textColor = c.key === 'statusLabel' ? argbToCss(style.font) : '#1F2937';
-      const fontWeight = c.key === 'statusLabel' ? '700' : '400';
+      if      (c.format === 'status') val = esc(t(STATUS_CONFIG[s.status]?.key) || s.status || '—');
+      else if (c.format === 'date')   val = esc(fmtDate(s.date || s.createdAt));
+      else if (c.format === 'dollar') val = '$' + formatNum(s[c.key] || 0);
+      else if (c.format === 'leb')    val = formatNum(s[c.key] || 0);
+      else                             val = esc(s[c.key] || '—');
+      const textColor = c.format === 'status' ? argbToCss(style.font) : '#1F2937';
+      const fontWeight = c.format === 'status' ? '700' : '400';
       return `<td style="padding:6px 5px;border:1px solid #B8C2D9;text-align:center;color:${textColor};font-weight:${fontWeight};">${val}</td>`;
     }).join('');
     return `<tr style="background:${argbToCss(style.fill)};">${cells}</tr>`;
   }).join('');
 
+  const totalsLabelIdx = Math.max(cols.findIndex(c => !c.total), 0);
   const totalsHtml = cols.map((c, i) => {
-    let val = '';
-    if (i === 0) val = t('pdfTotalLabel').replace('{n}', sorted.length);
-    else if (c.key === 'priceDollar')    val = '$' + formatNum(totalDollar);
-    else if (c.key === 'priceLeb')       val = formatNum(totalLeb);
-    else if (c.key === 'deliveryProfit') val = '$' + formatNum(totalProfit);
+    let val = i === totalsLabelIdx ? t('pdfTotalLabel').replace('{n}', sorted.length) : '';
+    if (c.total) {
+      const sum = sorted.reduce((total, s) => total + (Number(s[c.key]) || 0), 0);
+      val = (c.format === 'dollar' ? '$' : '') + formatNum(sum);
+    }
     return `<td style="padding:7px 5px;border:1px solid #4F6EF5;text-align:center;color:#1F2937;font-weight:700;">${val}</td>`;
   }).join('');
 
@@ -725,10 +794,17 @@ async function exportPDF(defaultName) {
   }
 }
 
-async function exportArchiveCSV() {
-  const saved     = window._allShips;
-  window._allShips = window._archShips || [];
+async function exportArchiveExcel() {
+  const saved      = window._allShips;
+  window._allShips = window._allArchShips || [];
   await exportExcel(`sonick-archive-${new Date().toISOString().slice(0, 10)}`);
+  window._allShips = saved;
+}
+
+async function exportArchivePDF() {
+  const saved      = window._allShips;
+  window._allShips = window._allArchShips || [];
+  await exportPDF(`sonick-archive-${new Date().toISOString().slice(0, 10)}`);
   window._allShips = saved;
 }
 

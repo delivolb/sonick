@@ -20,6 +20,7 @@ let currentUserData = null;
 let currentPage     = 'dashboard';
 let editingId       = null;
 let dollPrice       = 0;
+let exportColumnsConfig = null; // saved order/visibility for shipment export columns (Settings → Export Columns); null = not customized yet, use the full default set
 
 let companies_cache  = [];
 let drivers_cache    = [];
@@ -253,7 +254,11 @@ async function loadCaches() {
     companies_cache = compSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     drivers_cache   = drvSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     billtypes_cache = btSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (settSnap.exists) dollPrice = settSnap.data().dollarRate || 0;
+    if (settSnap.exists) {
+      const settingsData = settSnap.data();
+      dollPrice = settingsData.dollarRate || 0;
+      exportColumnsConfig = Array.isArray(settingsData.exportColumns) ? settingsData.exportColumns : null;
+    }
   } catch (e) {
     console.warn('Cache load error — using demo data:', e.message);
     companies_cache = [
@@ -271,6 +276,7 @@ async function loadCaches() {
       { id: 'bt4', name: 'Cancelled' },
     ];
     dollPrice = 89500;
+    exportColumnsConfig = null;
     const reason = (e?.code === 'permission-denied' || /insufficient permissions/i.test(e?.message || ''))
       ? 'Demo mode: Firestore denied access to companies/drivers/settings — check your security rules.'
       : 'Demo mode: could not load companies/drivers/settings — showing sample data.';

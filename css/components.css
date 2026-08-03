@@ -80,6 +80,26 @@
 .btn-icon { padding: 8px; aspect-ratio: 1; border-radius: 8px; }
 .btn-full { width: 100%; }
 
+/* ===== QUICK ADD ORDER BAR =====
+   Default: fields wrap onto multiple lines (min-width per field acts as the floor).
+   >=1600px: force a single row and size each field proportionally to its
+   default (min-width) value, so the row scales up to fill the wide screen
+   while keeping every field's relative width the same. */
+#ship-fast-order-bar .fo-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+#ship-fast-order-bar .fo-f-desc { flex: 1 1 0; }
+@media (min-width: 1600px) {
+  #ship-fast-order-bar .fo-row { flex-wrap: nowrap; }
+  #ship-fast-order-bar .fo-row .form-group { flex-shrink: 1; flex-basis: 0; }
+  #ship-fast-order-bar .fo-f-shipnum   { flex-grow: 100; }
+  #ship-fast-order-bar .fo-f-price     { flex-grow: 110; }
+  #ship-fast-order-bar .fo-f-priceleb  { flex-grow: 120; }
+  #ship-fast-order-bar .fo-f-customer  { flex-grow: 110; }
+  #ship-fast-order-bar .fo-f-phone     { flex-grow: 140; }
+  #ship-fast-order-bar .fo-f-address   { flex-grow: 150; }
+  #ship-fast-order-bar .fo-f-desc      { flex-grow: 150; }
+  #ship-fast-order-bar .fo-submit-btn  { flex: 0 0 auto; }
+}
+
 /* ===== CARDS ===== */
 .card { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-sm); }
 .card-header {
@@ -174,6 +194,16 @@ tbody td { padding: 12px 16px; font-size: 0.929rem; color: var(--text); vertical
 
 /* ===== FILTER BAR ===== */
 .filter-bar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+@media (min-width: 1600px) {
+  .filter-bar { flex-wrap: nowrap; }
+  .filter-bar > .dropdown       { flex: 13 1 0; min-width: 0; }
+  .filter-bar > .dropdown > .filter-select { width: 100%; }
+  .filter-bar > .filter-select  { flex: 14 1 0; min-width: 0; }
+  .filter-bar > .filter-date    { flex: 10 1 0; min-width: 0; }
+  .filter-bar > .table-search   { flex: 16 1 0; min-width: 0; }
+  .filter-bar > .table-search input { width: 100%; min-width: 0; }
+  .filter-bar > button          { flex: 0 0 auto; }
+}
 .filter-select {
   background: var(--bg-2); border: 1px solid var(--border-2);
   border-radius: 99px; padding: 7px 28px 7px 14px;

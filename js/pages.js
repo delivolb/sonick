@@ -7,6 +7,14 @@
 // ===================================================
 //  DASHBOARD
 // ===================================================
+function renderHome() {
+  const content = document.getElementById('page-content');
+  content.innerHTML = `
+  <div class="home-blank">
+    <img class="home-blank-logo" src="assets/logo-mark.png" alt="Sonick">
+  </div>`;
+}
+
 async function renderDashboard() {
   const content = document.getElementById('page-content');
   let stats = { total: 0, pending: 0, delivered: 0, returned: 0, totalDol: 0, totalLeb: 0, profit: 0 };
@@ -96,6 +104,26 @@ async function renderDashboard() {
 //  SHIPMENTS
 // ===================================================
 /** Fetch shipments from Firestore (or demo data on failure) — shared by full render and lightweight refresh. */
+/** Most-recent-activity timestamp for a shipment, in epoch millis — whichever is newer between
+ *  its last update and its creation. Handles both Firestore Timestamp objects (normal case) and
+ *  ISO-string fallbacks (offline/demo-mode writes). */
+function shipActivityMillis(s) {
+  const toMillis = (v) => {
+    if (!v) return 0;
+    if (typeof v.toMillis === 'function') return v.toMillis();
+    const t = new Date(v).getTime();
+    return isNaN(t) ? 0 : t;
+  };
+  return Math.max(toMillis(s.updatedAt), toMillis(s.createdAt));
+}
+
+/** Sort shipments by most-recent activity first — new orders AND recently-updated ones both
+ *  rise to the top, since both take priority for work. Sorted client-side (not via a Firestore
+ *  orderBy on updatedAt) so older documents that predate this field are never silently dropped. */
+function sortShipsByActivity(ships) {
+  return [...ships].sort((a, b) => shipActivityMillis(b) - shipActivityMillis(a));
+}
+
 async function fetchShipmentsFromDB() {
   let ships = [];
   try {
@@ -104,7 +132,7 @@ async function fetchShipmentsFromDB() {
       ships = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     }
   } catch (e) { ships = getDemoShipments(); }
-  return ships;
+  return sortShipsByActivity(ships);
 }
 
 let _shipmentsUnsub = null;
@@ -118,7 +146,7 @@ function subscribeShipments(onData) {
   if (!db) { onData(getDemoShipments()); return; }
   _shipmentsUnsub = db.collection('sonick_shipments').orderBy('createdAt', 'desc').limit(500)
     .onSnapshot(
-      snap => onData(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+      snap => onData(sortShipsByActivity(snap.docs.map(d => ({ id: d.id, ...d.data() })))),
       err  => { console.warn('Shipments live-sync error:', err.message); onData(getDemoShipments()); }
     );
 }
@@ -135,6 +163,7 @@ async function renderShipments() {
   const content = document.getElementById('page-content');
 
   const showProfit = can('canViewProfit');
+  window._selectedShipIds = new Set(); // fresh row-selection state each time this page opens
 
   // Filter dropdowns list all companies/drivers — not just ones that appear in the
   // currently loaded shipments — so every entity is always selectable.
@@ -146,10 +175,6 @@ async function renderShipments() {
   ${pageHeader(t('shipments'), [t('operations')])}
   <div class="toolbar">
   <div class="filter-bar">
-    <div class="table-search">
-      <span class="search-icon">🔍</span>
-      <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()" style="width:220px;">
-    </div>
     <div class="dropdown" id="ship-status-dropdown">
       <button type="button" class="filter-select" onclick="toggleDropdown('ship-status-dropdown')">
         <span id="ship-status-filter-label">${t('allStatuses')}</span>
@@ -176,6 +201,15 @@ async function renderShipments() {
     </select>
     <input type="date" class="filter-date" id="ship-date-from" onchange="filterShipments()" title="From date">
     <input type="date" class="filter-date" id="ship-date-to"   onchange="filterShipments()" title="To date">
+    <div class="table-search">
+      <span class="search-icon">📞</span>
+      <input type="text" placeholder="${t('searchByPhone')}" id="ship-phone-search" oninput="filterShipments()">
+    </div>
+    <div class="table-search">
+      <span class="search-icon">🔍</span>
+      <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()">
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="resetShipmentFilters()" title="${t('resetFilters')}">${ICONS.refreshCcw}</button>
   </div>
   </div>
 
@@ -185,36 +219,77 @@ async function renderShipments() {
       <strong style="font-size:0.857rem;color:var(--text-2);">⚡ ${t('quickAddOrder')}</strong>
       <span id="fast-order-badges" style="display:flex;gap:6px;flex-wrap:wrap;"></span>
     </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-      <div class="form-group" style="margin-bottom:0;min-width:100px;">
+    <div class="fo-row" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div class="form-group fo-f-shipnum" style="margin-bottom:0;min-width:100px;">
         <label class="form-label">${t('shipNumberLabel')} <span style="color:var(--brand)">*</span></label>
         <input type="number" id="fo-shipnum" class="form-input" placeholder="${t('shipNumPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
-      <div class="form-group" style="margin-bottom:0;min-width:110px;">
+      <div class="form-group fo-f-price" style="margin-bottom:0;min-width:110px;">
         <label class="form-label">${t('priceUSD')} <span style="color:var(--brand)">*</span></label>
         <input type="number" step="0.01" id="fo-price" class="form-input" placeholder="0.00" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
-      <div class="form-group" style="margin-bottom:0;min-width:180px;flex:1;">
+      <div class="form-group fo-f-priceleb" style="margin-bottom:0;min-width:120px;">
+        <label class="form-label">${t('priceLL')}</label>
+        <input type="number" id="fo-priceleb" class="form-input" placeholder="0.00" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <div class="form-group fo-f-customer" style="margin-bottom:0;min-width:110px;">
         <label class="form-label">${t('customer')}</label>
         <input type="text" id="fo-customer" class="form-input" placeholder="${t('recipientNamePlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
-      <div class="form-group" style="margin-bottom:0;min-width:140px;">
+      <div class="form-group fo-f-phone" style="margin-bottom:0;min-width:140px;">
         <label class="form-label">${t('phone')}</label>
         <input type="tel" id="fo-phone" class="form-input" placeholder="+961..." onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
-      <button class="btn btn-quick-add btn-sm" onclick="quickAddOrder()" style="height:38px;white-space:nowrap;">+ ${t('newShipment')}</button>
+      <div class="form-group fo-f-address" style="margin-bottom:0;min-width:150px;">
+        <label class="form-label">${t('address')}</label>
+        <input type="text" id="fo-address" class="form-input" placeholder="${t('deliveryAddressPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <div class="form-group fo-f-desc" style="margin-bottom:0;min-width:150px;">
+        <label class="form-label">${t('descriptionNotesLabel')}</label>
+        <input type="text" id="fo-desc" class="form-input" placeholder="${t('descPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+      </div>
+      <button class="btn btn-quick-add btn-sm fo-submit-btn" onclick="quickAddOrder()" style="height:38px;white-space:nowrap;">+ ${t('newShipment')}</button>
+    </div>
+  </div>` : ''}
+
+  ${can('canEditShipments') ? `
+  <div class="card" id="ship-bulk-assign-bar" style="display:none;margin-bottom:16px;padding:14px 16px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <strong style="font-size:0.857rem;color:var(--text-2);">⚡ ${t('bulkAssignOrders')}</strong>
+      <span id="bulk-assign-badges" style="display:flex;gap:6px;flex-wrap:wrap;"></span>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div class="form-group" style="margin-bottom:0;flex:1;min-width:260px;">
+        <label class="form-label">${t('orderNumbersLabel')}</label>
+        <input type="text" id="ba-shipnums" class="form-input" placeholder="${t('orderNumbersPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();bulkAssignOrders();}">
+      </div>
+      <button class="btn btn-quick-add btn-sm" onclick="bulkAssignOrders()" style="height:38px;white-space:nowrap;">${t('assignBtn')}</button>
     </div>
   </div>` : ''}
 
   <div class="table-container desktop-table">
     <div class="table-header">
-      <span style="font-size:13px;color:var(--text-2);" id="ships-count">Loading...</span>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:var(--text-2);" id="ships-count">Loading...</span>
+        ${can('canEditShipments') ? `
+        <div id="ship-bulk-status-bar" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span id="bulk-status-count" style="font-size:12px;color:var(--text-3);"></span>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap;">
+            <select id="bulk-status-select" class="form-select" style="height:32px;padding:4px 10px;font-size:0.8rem;">
+              ${ALL_STATUSES.map(s => `<option value="${s}">${esc(t(STATUS_CONFIG[s].key))}</option>`).join('')}
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="applyBulkStatus()" style="white-space:nowrap;">${t('applyBtn')}</button>
+          </div>
+        </div>` : ''}
+      </div>
+      ${can('canArchive')  ? `<button class="btn btn-secondary btn-sm" onclick="archiveFilteredShipments()">${t('archiveGroupBtn')}</button>` : ''}
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
     </div>
     <div class="table-scroll">
       <table id="ships-table">
         <thead><tr>
+          ${can('canEditShipments') ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="ships-select-all" onchange="toggleSelectAllShipments(this)"></th>` : ''}
           <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('company')}</th>
           <th>${t('driver')}</th><th>${t('contractor')}</th>
           <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
@@ -245,45 +320,95 @@ function updateStatusFilterLabel(statuses) {
 }
 
 /**
- * Show/hide + populate the Quick Add Order bar based on the active
- * Company/Driver/Contractor filters. Only appears once at least one of
- * those three filters is set; the matched entities are then "fixed" for
- * the quick-add form and their stored delivery costs are pulled in as
- * defaults (company → delivery profit, driver/contractor → their own cost).
+ * Show/hide + populate the two order-entry bars based on the active
+ * Company/Driver/Contractor filters:
+ *  - Company set (with or without Driver/Contractor also set) → Quick Add
+ *    Order bar, so a newly created shipment always has a company fixed to
+ *    it. The matched entities are "fixed" for the quick-add form and their
+ *    stored delivery costs are pulled in as defaults (company → delivery
+ *    profit, driver/contractor → their own cost).
+ *  - No Company, but Driver and/or Contractor set → Bulk Assign bar instead,
+ *    to assign one or more existing order numbers to that driver/contractor.
+ *  - Nothing set → both bars hidden.
  */
-function updateFastOrderBar(companyName, driverName, contractorName) {
-  const bar = document.getElementById('ship-fast-order-bar');
-  if (!bar) return;
+function updateOrderEntryBars(companyName, driverName, contractorName) {
+  const fastBar = document.getElementById('ship-fast-order-bar');
+  const bulkBar = document.getElementById('ship-bulk-assign-bar');
 
-  if (!companyName && !driverName && !contractorName) {
-    bar.style.display = 'none';
-    window._fastOrderFixed = null;
-    return;
+  const showFast = !!companyName;
+  const showBulk = !companyName && (!!driverName || !!contractorName);
+
+  if (fastBar) {
+    const wasHidden = fastBar.style.display === 'none' || !fastBar.style.display;
+    fastBar.style.display = showFast ? 'block' : 'none';
+    if (showFast && wasHidden) document.getElementById('fo-shipnum')?.focus();
   }
-  const wasHidden = bar.style.display === 'none';
-  bar.style.display = 'block';
-  if (wasHidden) document.getElementById('fo-shipnum')?.focus();
+  if (bulkBar) {
+    const wasHidden = bulkBar.style.display === 'none' || !bulkBar.style.display;
+    bulkBar.style.display = showBulk ? 'block' : 'none';
+    if (showBulk && wasHidden) document.getElementById('ba-shipnums')?.focus();
+  }
+
+  if (!showFast) window._fastOrderFixed  = null;
+  if (!showBulk) window._bulkAssignFixed = null;
+  if (!showFast && !showBulk) return;
 
   const companyObj    = companyName    ? companies_cache.find(c => c.name === companyName)    : null;
   const driverObj      = driverName     ? drivers_cache.find(d => d.name === driverName)        : null;
   const contractorObj = contractorName ? companies_cache.find(c => c.name === contractorName)  : null;
 
-  window._fastOrderFixed = {
-    companyId: companyObj?.id || '',       companyName: companyObj?.name || '',
-    driverId: driverObj?.id || '',         driverName: driverObj?.name || '',
-    contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '',
-    deliveryProfit:         companyObj?.deliveryCost    || 0,
-    driverDeliveryCost:     driverObj?.deliveryCost      || 0,
-    contractorDeliveryCost: contractorObj?.deliveryCost || 0,
-  };
+  if (showFast) {
+    window._fastOrderFixed = {
+      companyId: companyObj?.id || '',       companyName: companyObj?.name || '',
+      driverId: driverObj?.id || '',         driverName: driverObj?.name || '',
+      contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '',
+      deliveryProfit:         companyObj?.deliveryCost    || 0,
+      driverDeliveryCost:     driverObj?.deliveryCost      || 0,
+      contractorDeliveryCost: contractorObj?.deliveryCost || 0,
+    };
 
-  const badges = document.getElementById('fast-order-badges');
-  if (badges) {
-    let html = '';
-    if (companyObj)    html += `<span class="badge badge-blue">${t('company')}: ${esc(companyObj.name)}</span>`;
-    if (driverObj)     html += `<span class="badge badge-green">${t('driver')}: ${esc(driverObj.name)}</span>`;
-    if (contractorObj) html += `<span class="badge badge-purple">${t('contractor')}: ${esc(contractorObj.name)}</span>`;
-    badges.innerHTML = html;
+    const badges = document.getElementById('fast-order-badges');
+    if (badges) {
+      let html = '';
+      if (companyObj)    html += `<span class="badge badge-blue">${t('company')}: ${esc(companyObj.name)}</span>`;
+      if (driverObj)     html += `<span class="badge badge-green">${t('driver')}: ${esc(driverObj.name)}</span>`;
+      if (contractorObj) html += `<span class="badge badge-purple">${t('contractor')}: ${esc(contractorObj.name)}</span>`;
+      badges.innerHTML = html;
+    }
+  }
+
+  if (showBulk) {
+    window._bulkAssignFixed = {
+      driverId: driverObj?.id || '',         driverName: driverObj?.name || '',
+      contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '',
+    };
+
+    const badges = document.getElementById('bulk-assign-badges');
+    if (badges) {
+      let html = '';
+      if (driverObj)     html += `<span class="badge badge-green">${t('driver')}: ${esc(driverObj.name)}</span>`;
+      if (contractorObj) html += `<span class="badge badge-purple">${t('contractor')}: ${esc(contractorObj.name)}</span>`;
+      badges.innerHTML = html;
+    }
+  }
+}
+
+/** True if a shipment with this ship number already exists for this company — queried directly
+ *  against Firestore (not the local cache) so the check is accurate no matter which page the
+ *  user is creating the order from. Skipped (returns false) when there's no company to compare
+ *  against, or if the check itself fails — never blocks a save due to a network hiccup. */
+async function shipNumberExistsForCompany(shipNumber, companyId) {
+  if (!db || !companyId) return false;
+  try {
+    const snap = await db.collection('sonick_shipments')
+      .where('shipNumber', '==', shipNumber)
+      .where('companyId', '==', companyId)
+      .limit(1)
+      .get();
+    return !snap.empty;
+  } catch (e) {
+    console.warn('Duplicate ship-number check failed:', e.message);
+    return false;
   }
 }
 
@@ -296,9 +421,16 @@ async function quickAddOrder() {
   const shipNumber    = parseInt(shipNumberRaw, 10);
   if (!shipNumberRaw || isNaN(shipNumber)) { toast(t('shipNumRequired'), 'error'); return; }
 
+  if (await shipNumberExistsForCompany(shipNumber, fixed.companyId)) {
+    toast(t('duplicateShipNumber'), 'error');
+    return;
+  }
+
   const priceRaw     = document.getElementById('fo-price')?.value;
   const priceDollar  = parseFloat(priceRaw);
   if (priceRaw === '' || priceRaw == null || isNaN(priceDollar)) { toast(t('priceUSD'), 'error'); return; }
+
+  const priceLeb = parseFloat(document.getElementById('fo-priceleb')?.value) || 0;
 
   const customerName = document.getElementById('fo-customer')?.value?.trim() || '';
 
@@ -306,30 +438,37 @@ async function quickAddOrder() {
     shipNumber,
     date:                   today(),
     customerName,
-    customerPhone:          document.getElementById('fo-phone')?.value?.trim() || '',
-    customerAddress:        '',
+    customerPhone:          document.getElementById('fo-phone')?.value?.trim()   || '',
+    customerAddress:        document.getElementById('fo-address')?.value?.trim() || '',
     companyId:              fixed.companyId,    companyName:    fixed.companyName,
     driverId:               fixed.driverId,     driverName:     fixed.driverName,
     contractorId:           fixed.contractorId, contractorName: fixed.contractorName,
     status:                 'Pending',
     priceDollar,
-    priceLeb:               0,
+    priceLeb,
     driverDeliveryCost:     fixed.driverDeliveryCost,
     contractorDeliveryCost: fixed.contractorDeliveryCost,
     deliveryProfit:         fixed.deliveryProfit,
     returnedDeliveryCost:   0,
-    description:            '',
+    withdrawnAmountDollar:  0,
+    withdrawnAmountLeb:     0,
+    description:            document.getElementById('fo-desc')?.value?.trim() || '',
     createdAt:              firebase.firestore.FieldValue.serverTimestamp(),
     createdBy:              currentUserData?.id || '',
+    updatedAt:              firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy:              currentUserData?.id || '',
   };
 
   try {
     if (db) await db.collection('sonick_shipments').add(payload);
     toast(t('shipmentCreated'), 'success');
-    document.getElementById('fo-shipnum').value  = '';
-    document.getElementById('fo-customer').value = '';
-    document.getElementById('fo-phone').value    = '';
-    document.getElementById('fo-price').value    = '';
+    document.getElementById('fo-shipnum').value   = '';
+    document.getElementById('fo-customer').value  = '';
+    document.getElementById('fo-phone').value     = '';
+    document.getElementById('fo-price').value     = '';
+    document.getElementById('fo-priceleb').value  = '';
+    document.getElementById('fo-address').value   = '';
+    document.getElementById('fo-desc').value      = '';
     await refreshShipmentsData();
     document.getElementById('fo-shipnum')?.focus();
   } catch (e) {
@@ -337,8 +476,58 @@ async function quickAddOrder() {
   }
 }
 
+/** Assign one or more existing shipments — identified by ship number, comma-separated —
+ *  to the driver/contractor fixed by the active filters (Bulk Assign bar). */
+async function bulkAssignOrders() {
+  const fixed = window._bulkAssignFixed;
+  if (!fixed) return;
+
+  const raw  = document.getElementById('ba-shipnums')?.value || '';
+  const nums = [...new Set(
+    raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+  )];
+  if (!nums.length) { toast(t('orderNumbersRequired'), 'error'); return; }
+
+  const updates = {};
+  if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName; }
+  if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; }
+  updates.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  updates.updatedBy = currentUserData?.id || '';
+
+  const allShips = window._allShips || [];
+  const matched  = [];
+  const notFound = [];
+  nums.forEach(n => {
+    const hits = allShips.filter(s => s.shipNumber === n);
+    if (hits.length) matched.push(...hits); else notFound.push(n);
+  });
+
+  if (!matched.length) { toast(t('noMatchingOrders'), 'error'); return; }
+
+  try {
+    if (db) {
+      const batch = db.batch();
+      matched.forEach(s => batch.update(db.collection('sonick_shipments').doc(s.id), updates));
+      await batch.commit();
+    }
+    const msg = `${matched.length} ${t('ordersAssignedLabel')}` +
+      (notFound.length ? ` — ${t('notFoundLabel')}: ${notFound.join(', ')}` : '');
+    toast(msg, 'success');
+    document.getElementById('ba-shipnums').value = '';
+    await refreshShipmentsData();
+    document.getElementById('ba-shipnums')?.focus();
+  } catch (e) {
+    toast(t('errorSaving') + e.message, 'error');
+  }
+}
+
 function filterShipments() {
-  const search     = (document.getElementById('ship-search')?.value   || '').toLowerCase();
+  const searchRaw  = (document.getElementById('ship-search')?.value || '').trim();
+  const searchNums = searchRaw.includes(',')
+    ? [...new Set(searchRaw.split(',').map(v => parseInt(v.trim(), 10)).filter(n => !isNaN(n)))]
+    : null;
+  const search     = searchRaw.toLowerCase();
+  const phoneSearch = (document.getElementById('ship-phone-search')?.value || '').trim();
   const statuses   =  [...document.querySelectorAll('.ship-status-check:checked')].map(cb => cb.value);
   const company    =  document.getElementById('ship-company-filter')?.value     || '';
   const driver     =  document.getElementById('ship-driver-filter')?.value      || '';
@@ -347,16 +536,19 @@ function filterShipments() {
   const dateTo     =  document.getElementById('ship-date-to')?.value            || '';
 
   updateStatusFilterLabel(statuses);
-  updateFastOrderBar(company, driver, contractor);
+  updateOrderEntryBars(company, driver, contractor);
 
   let ships = (window._allShips || []).filter(s => {
-    if (search && !(
+    if (searchNums) {
+      if (!searchNums.includes(s.shipNumber)) return false;
+    } else if (search && !(
       (s.shipNumber + '').includes(search) ||
       (s.customerName  || '').toLowerCase().includes(search) ||
       (s.companyName   || '').toLowerCase().includes(search) ||
       (s.driverName    || '').toLowerCase().includes(search) ||
       (s.customerAddress || '').toLowerCase().includes(search)
     )) return false;
+    if (phoneSearch && !(s.customerPhone || '').includes(phoneSearch)) return false;
     if (statuses.length && !statuses.includes(s.status)) return false;
     if (company     && s.companyName    !== company)     return false;
     if (driver      && s.driverName     !== driver)      return false;
@@ -366,14 +558,24 @@ function filterShipments() {
     return true;
   });
 
+  window._filteredShips = ships; // exact "searched rows" set, used by archiveFilteredShipments()
+
   const showProfit = can('canViewProfit');
   let totalDol = 0, totalLeb = 0, totalProfit = 0;
+  let withdrawnDol = 0, withdrawnLeb = 0, withdrawnCount = 0;
   ships.forEach(s => {
     totalDol    += s.priceDollar    || 0;
     totalLeb    += s.priceLeb       || 0;
     totalProfit += s.deliveryProfit || 0;
     if (s.status === 'Returned-Paid') totalProfit -= (s.returnedDeliveryCost || 0);
+    if (s.status === 'Withdrawn') {
+      withdrawnDol += s.withdrawnAmountDollar || 0;
+      withdrawnLeb += s.withdrawnAmountLeb    || 0;
+      withdrawnCount++;
+    }
   });
+  const netDol = totalDol - withdrawnDol;
+  const netLeb = totalLeb - withdrawnLeb;
 
   const tbody    = document.getElementById('ships-tbody');
   const mobile   = document.getElementById('ships-mobile');
@@ -382,7 +584,9 @@ function filterShipments() {
   const totalEl  = document.getElementById('ships-total-label');
 
   if (countEl)   countEl.textContent   = `${ships.length} ${t('shipments')}`;
-  if (summaryEl) summaryEl.textContent = `${t('total')} $${formatNum(totalDol)} | L.L. ${formatNum(totalLeb)}${showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : ''}`;
+  if (summaryEl) summaryEl.textContent = `${t('total')} $${formatNum(totalDol)} | L.L. ${formatNum(totalLeb)}`
+    + (showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : '')
+    + (withdrawnCount ? ` | ${t('withdrawnLabel')}: $${formatNum(withdrawnDol)} / L.L. ${formatNum(withdrawnLeb)} | ${t('netRemainingLabel')}: $${formatNum(netDol)} / L.L. ${formatNum(netLeb)}` : '');
   if (totalEl)   totalEl.textContent   = `${t('showing')} ${ships.length} ${t('of')} ${(window._allShips || []).length} ${t('shipments')}`;
 
   if (tbody) {
@@ -392,6 +596,7 @@ function filterShipments() {
           const dbl = (field) => canEditCells ? `ondblclick="inlineEditCell(this,'${s.id}','${field}')" class="cell-editable" title="${t('dblClickToEdit')}"` : '';
           return `
         <tr>
+          ${canEditCells ? `<td style="text-align:center;"><input type="checkbox" class="ship-row-check" value="${s.id}" ${window._selectedShipIds.has(s.id) ? 'checked' : ''} onchange="toggleShipRowCheck('${s.id}', this.checked)"></td>` : ''}
           <td ${dbl('shipNumber')}><span class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</span></td>
           <td>
             <div ${dbl('customerName')} style="font-weight:500;">${esc(s.customerName || '—')}</div>
@@ -415,10 +620,143 @@ function filterShipments() {
           </td>
         </tr>`;
         }).join('')
-      : `<tr><td colspan="${showProfit ? 11 : 10}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
+      : `<tr><td colspan="${(canEditCells ? 1 : 0) + (showProfit ? 11 : 10)}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
   }
 
+  updateShipSelectionUI();
   if (mobile) mobile.innerHTML = ships.slice(0, 50).map(s => mobileShipCard(s)).join('');
+}
+
+/** Clear every filter/search control on the Shipments page (status checkboxes, company/driver/
+ *  contractor selects, both date pickers, and the search box) and re-apply to show all shipments. */
+function resetShipmentFilters() {
+  const searchEl = document.getElementById('ship-search');
+  if (searchEl) searchEl.value = '';
+  const phoneEl = document.getElementById('ship-phone-search');
+  if (phoneEl) phoneEl.value = '';
+  document.querySelectorAll('.ship-status-check').forEach(cb => { cb.checked = false; });
+  const company    = document.getElementById('ship-company-filter');
+  const driver     = document.getElementById('ship-driver-filter');
+  const contractor = document.getElementById('ship-contractor-filter');
+  const dateFrom   = document.getElementById('ship-date-from');
+  const dateTo     = document.getElementById('ship-date-to');
+  if (company)    company.value    = '';
+  if (driver)     driver.value     = '';
+  if (contractor) contractor.value = '';
+  if (dateFrom)   dateFrom.value   = '';
+  if (dateTo)     dateTo.value     = '';
+  filterShipments();
+}
+
+// ===== ROW SELECTION + BULK STATUS UPDATE (Shipments table) =====
+
+/** Toggle one row's checkbox in/out of the persistent selection set. */
+function toggleShipRowCheck(id, checked) {
+  window._selectedShipIds = window._selectedShipIds || new Set();
+  if (checked) window._selectedShipIds.add(id);
+  else window._selectedShipIds.delete(id);
+  updateShipSelectionUI();
+}
+
+/** Header "select all" checkbox — selects/deselects every row currently visible in the table. */
+function toggleSelectAllShipments(el) {
+  window._selectedShipIds = window._selectedShipIds || new Set();
+  const checked = el.checked;
+  document.querySelectorAll('#ships-tbody .ship-row-check').forEach(cb => {
+    cb.checked = checked;
+    if (checked) window._selectedShipIds.add(cb.value);
+    else window._selectedShipIds.delete(cb.value);
+  });
+  updateShipSelectionUI();
+}
+
+/** Sync the header checkbox (checked/indeterminate) and the bulk-status bar's
+ *  visibility + count with the current selection. Called after every table render
+ *  and every individual checkbox change. */
+function updateShipSelectionUI() {
+  window._selectedShipIds = window._selectedShipIds || new Set();
+
+  const rowChecks = [...document.querySelectorAll('#ships-tbody .ship-row-check')];
+  const total = rowChecks.length;
+  const checkedCount = rowChecks.filter(cb => cb.checked).length;
+
+  const selectAll = document.getElementById('ships-select-all');
+  if (selectAll) {
+    selectAll.checked = total > 0 && checkedCount === total;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < total;
+  }
+
+  const n = window._selectedShipIds.size;
+  const bar = document.getElementById('ship-bulk-status-bar');
+  if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
+  const countEl = document.getElementById('bulk-status-count');
+  if (countEl) countEl.textContent = `${n} ${t('selectedLabel')}`;
+}
+
+/** Apply the status chosen in the bulk-status-bar select to every selected shipment.
+ *  Mirrors the single-row inline-edit rule: switching to Returned-Paid first prompts
+ *  for a returned delivery cost, applied to all selected rows. */
+function applyBulkStatus() {
+  const ids = [...(window._selectedShipIds || [])];
+  if (!ids.length) return;
+  const newStatus = document.getElementById('bulk-status-select')?.value;
+  if (!newStatus) return;
+
+  if (newStatus === 'Returned-Paid') {
+    promptInput(
+      {
+        title:        t('returnedDeliveryCost'),
+        message:      t('returnedDeliveryCostPrompt'),
+        defaultValue: '',
+        type:         'number',
+        step:         '0.01',
+        placeholder:  '0.00',
+      },
+      (costStr) => {
+        const returnedDeliveryCost = parseFloat(costStr) || 0;
+        commitBulkStatus(ids, newStatus, { returnedDeliveryCost });
+      },
+      () => {} // cancelled — keep original statuses
+    );
+  } else {
+    commitBulkStatus(ids, newStatus, {});
+  }
+}
+
+/** Persist a bulk status change (plus any extra fields, e.g. returnedDeliveryCost) to
+ *  every given shipment id in one batched write, then refresh and clear the selection.
+ *  When the new status is Withdrawn, each order's own price is used as its withdrawn
+ *  amount ($ / L.L.) by default — a full-refund assumption an admin can always fine-tune
+ *  afterwards on the individual order. */
+async function commitBulkStatus(ids, newStatus, extraPayload) {
+  const isWithdrawn = newStatus === 'Withdrawn';
+  const payload = { status: newStatus, ...extraPayload };
+  payload.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  payload.updatedBy = currentUserData?.id || '';
+
+  try {
+    if (db) {
+      const batch = db.batch();
+      ids.forEach(id => {
+        let rowPayload = payload;
+        if (isWithdrawn) {
+          const ship = (window._allShips || []).find(x => x.id === id);
+          rowPayload = {
+            ...payload,
+            withdrawnAmountDollar: ship?.priceDollar || 0,
+            withdrawnAmountLeb:    ship?.priceLeb    || 0,
+          };
+        }
+        batch.update(db.collection('sonick_shipments').doc(id), rowPayload);
+      });
+      await batch.commit();
+    }
+    toast(`${ids.length} ${t('statusUpdatedLabel')}`, 'success');
+    window._selectedShipIds = new Set();
+    await refreshShipmentsData();
+  } catch (e) {
+    toast(t('errorSaving') + e.message, 'error');
+  }
 }
 
 // ===== INLINE CELL EDITING (double-click a shipments row cell) =====
@@ -504,6 +842,15 @@ function inlineEditCell(el, id, field) {
           },
           () => { el.innerHTML = prevHTML; } // cancelled — keep original status
         );
+      } else if (field === 'status' && input.value === 'Withdrawn') {
+        settled = true; // handled manually below; blocks the blur listener's finish(true)
+        promptWithdrawAmount(
+          s,
+          (extra) => {
+            saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, extra);
+          },
+          () => { el.innerHTML = prevHTML; } // cancelled — keep original status
+        );
       } else {
         finish(true);
       }
@@ -554,8 +901,10 @@ function shipmentFormHTML(data) {
     `<option value="${s}" ${d.status === s ? 'selected' : ''}>${esc(t(STATUS_CONFIG[s].key))}</option>`
   ).join('');
 
-  /* Show returned delivery cost row only when status is Returned-Paid */
+  /* Show returned delivery cost row only when status is Returned-Paid; the withdrawn-order
+     amount row is entirely separate and only shows for the Withdrawn status. */
   const isReturnedPaid = d.status === 'Returned-Paid';
+  const isWithdrawn     = d.status === 'Withdrawn';
 
   return `
   <div class="form-row">
@@ -606,6 +955,23 @@ function shipmentFormHTML(data) {
     </div>
   </div>
 
+  <!-- Withdrawn order value ($ / L.L.) — a customer-initiated cancellation/return, unrelated
+       to the Returned-Unpaid/Returned-Paid statuses below -->
+  <div class="form-row" id="f-withdrawn-amount-row" style="display:${isWithdrawn ? 'flex' : 'none'};">
+    <div class="form-group">
+      <label class="form-label" style="color:var(--amber);">↺ ${t('withdrawnAmountUSD')}</label>
+      <input type="number" step="0.01" id="f-withdrawn-usd" class="form-input"
+             value="${d.withdrawnAmountDollar || ''}" placeholder="0.00"
+             style="border-color:var(--amber);outline-color:var(--amber);">
+    </div>
+    <div class="form-group">
+      <label class="form-label" style="color:var(--amber);">↺ ${t('withdrawnAmountLL')}</label>
+      <input type="number" id="f-withdrawn-lbp" class="form-input"
+             value="${d.withdrawnAmountLeb || ''}" placeholder="0.00"
+             style="border-color:var(--amber);outline-color:var(--amber);">
+    </div>
+  </div>
+
   <!-- Returned-Paid delivery cost — shown/hidden via onStatusChange() -->
   <div class="form-group" id="f-returned-cost-row" style="display:${isReturnedPaid ? 'block' : 'none'};">
     <label class="form-label" style="color:var(--purple);">
@@ -650,11 +1016,16 @@ function shipmentFormHTML(data) {
   </div>`;
 }
 
-/** Show/hide the Returned-Paid delivery cost field based on selected status */
+/** Show/hide the returned-order fields based on selected status: the returned amount row
+ *  shows for either Returned-Unpaid or Returned-Paid; the delivery-cost row only for Paid. */
+/** Show/hide the returned-order fields based on selected status: the withdrawn-amount row
+ *  shows only for the Withdrawn status; the delivery-cost row only for Returned-Paid. */
 function onStatusChange() {
   const status = document.getElementById('f-status')?.value;
-  const row    = document.getElementById('f-returned-cost-row');
-  if (row) row.style.display = status === 'Returned-Paid' ? 'block' : 'none';
+  const amountRow = document.getElementById('f-withdrawn-amount-row');
+  const costRow   = document.getElementById('f-returned-cost-row');
+  if (amountRow) amountRow.style.display = status === 'Withdrawn'      ? 'flex'  : 'none';
+  if (costRow)   costRow.style.display   = status === 'Returned-Paid' ? 'block' : 'none';
 }
 
 // ===== SAVE SHIPMENT =====
@@ -669,6 +1040,11 @@ async function saveShipment() {
 
   const shipNum = parseInt(document.getElementById('f-shipnum')?.value) || 0;
   if (!shipNum) { toast(t('shipNumRequired'), 'error'); return; }
+
+  if (!editingId && await shipNumberExistsForCompany(shipNum, companyId)) {
+    toast(t('duplicateShipNumber'), 'error');
+    return;
+  }
 
   const ts = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
   const payload = {
@@ -690,6 +1066,8 @@ async function saveShipment() {
     contractorDeliveryCost:parseFloat(document.getElementById('f-contractorcost')?.value) || 0,
     deliveryProfit:        parseFloat(document.getElementById('f-profit')?.value)         || 0,
     returnedDeliveryCost:  parseFloat(document.getElementById('f-returned-cost')?.value)  || 0,
+    withdrawnAmountDollar: parseFloat(document.getElementById('f-withdrawn-usd')?.value)   || 0,
+    withdrawnAmountLeb:    parseFloat(document.getElementById('f-withdrawn-lbp')?.value)   || 0,
     description:           document.getElementById('f-desc')?.value?.trim()  || '',
     updatedAt:             ts,
     updatedBy:             currentUserData?.id || '',
@@ -750,6 +1128,8 @@ async function viewShipment(id) {
     <div class="fin-item"><div class="fin-label">Delivery Cost</div><div class="fin-value negative">$${formatNum(s.deliveryCost || 0)}</div></div>
     <div class="fin-item"><div class="fin-label">Driver Cost</div><div class="fin-value negative">$${formatNum(s.driverDeliveryCost || 0)}</div></div>
     <div class="fin-item"><div class="fin-label">Contractor Cost</div><div class="fin-value negative">$${formatNum(s.contractorDeliveryCost || 0)}</div></div>
+    ${s.status === 'Withdrawn' ? `<div class="fin-item"><div class="fin-label" style="color:var(--amber);">↺ ${t('withdrawnAmountUSD')}</div><div class="fin-value negative">$${formatNum(s.withdrawnAmountDollar || 0)}</div></div>
+    <div class="fin-item"><div class="fin-label" style="color:var(--amber);">↺ ${t('withdrawnAmountLL')}</div><div class="fin-value negative">${formatNum(s.withdrawnAmountLeb || 0)} LL</div></div>` : ''}
     ${s.status === 'Returned-Paid' ? `<div class="fin-item"><div class="fin-label" style="color:var(--purple);">${t('returnedDeliveryCost')}</div><div class="fin-value negative">$${formatNum(s.returnedDeliveryCost || 0)}</div></div>` : ''}
     ${showProfit ? `<div class="fin-item"><div class="fin-label">${t('profitF')}</div><div class="fin-value positive">$${formatNum((s.deliveryProfit || 0) - (s.status === 'Returned-Paid' ? (s.returnedDeliveryCost || 0) : 0))}</div></div>` : ''}
   </div>
@@ -814,9 +1194,64 @@ async function archiveShipment(id) {
   });
 }
 
+/** Archive every order in the CURRENT search/filter result set on the Shipments page in one
+ *  action (not the row-level single archive) — excluding Pending and Delayed orders, which are
+ *  still in progress and must stay in the active list. Always confirms with the exact count
+ *  before doing anything, since this is a bulk irreversible move to the archive collection. */
+async function archiveFilteredShipments() {
+  if (!can('canArchive')) { toast(t('noPermission'), 'error'); return; }
+
+  const filtered = window._filteredShips || [];
+  const eligible = filtered.filter(s => s.status !== 'Pending' && s.status !== 'Delayed');
+  const skipped  = filtered.length - eligible.length;
+
+  if (!eligible.length) { toast(t('noOrdersToArchive'), 'error'); return; }
+
+  const msg = `${t('archiveGroupConfirmMsg')} (${eligible.length}).`
+    + (skipped > 0 ? ` ${t('archiveGroupSkippedNote')} (${skipped}).` : '');
+
+  confirmAction(t('archiveGroupConfirmTitle'), msg, async () => {
+    try {
+      if (db) {
+        const ids = eligible.map(s => s.id);
+        // Read current data for each doc first, since the archive copy must reflect
+        // whatever is in Firestore right now (not the possibly-stale in-memory list).
+        const docs = await Promise.all(ids.map(id => db.collection('sonick_shipments').doc(id).get()));
+        const CHUNK = 200; // set+delete = 2 writes/doc, stay well under Firestore's 500-write batch limit
+        for (let i = 0; i < docs.length; i += CHUNK) {
+          const batch = db.batch();
+          docs.slice(i, i + CHUNK).forEach(doc => {
+            if (!doc.exists) return;
+            batch.set(db.collection('sonick_archive').doc(doc.id), {
+              ...doc.data(),
+              archivedAt: firebase.firestore.FieldValue.serverTimestamp(),
+              archivedBy: currentUserData?.id
+            });
+            batch.delete(db.collection('sonick_shipments').doc(doc.id));
+          });
+          await batch.commit();
+        }
+      }
+      toast(`${eligible.length} ${t('ordersArchivedLabel')}`, 'success');
+      window._selectedShipIds = new Set();
+      await refreshShipmentsData();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
 // ===================================================
 //  ARCHIVE
 // ===================================================
+async function refreshArchiveData() {
+  try {
+    if (db) {
+      const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(500).get();
+      window._allArchShips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+  } catch (e) { /* keep whatever was already loaded */ }
+  filterArchive();
+}
+
 async function renderArchive() {
   const content = document.getElementById('page-content');
   let ships = [];
@@ -828,34 +1263,93 @@ async function renderArchive() {
   } catch (e) { ships = getDemoShipments().map(s => ({ ...s, status: 'Delivered' })); }
 
   const showProfit = can('canViewProfit');
+  const canManage   = can('canArchive');
+  const canDelete   = can('canDeleteShipments');
+  window._selectedArchIds = new Set(); // fresh row-selection state each time this page opens
+
+  // Same filter dropdowns as the Shipments page — list every company/driver, not just
+  // ones present in the currently loaded archive rows.
+  const companyNames    = companies_cache.map(c => c.name).filter(Boolean).sort();
+  const driverNames     = drivers_cache.map(d => d.name).filter(Boolean).sort();
+  const contractorNames = companies_cache.map(c => c.name).filter(Boolean).sort();
+
   content.innerHTML = `
-  ${pageHeader(t('archive'), [t('operations')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveCSV()">${ICONS.excelFile} Export</button>` : '')}
+  ${pageHeader(t('archive'), [t('operations')])}
   <div class="toolbar">
   <div class="filter-bar">
+    <div class="dropdown" id="arch-status-dropdown">
+      <button type="button" class="filter-select" onclick="toggleDropdown('arch-status-dropdown')">
+        <span id="arch-status-filter-label">${t('allStatuses')}</span>
+      </button>
+      <div class="dropdown-menu" style="min-width:210px;max-height:280px;overflow-y:auto;">
+        ${ALL_STATUSES.map(s => `
+        <label class="dropdown-item" style="justify-content:flex-start;">
+          <input type="checkbox" class="arch-status-check" value="${s}" onchange="filterArchive()" style="accent-color:var(--brand);">
+          <span>${esc(t(STATUS_CONFIG[s].key))}</span>
+        </label>`).join('')}
+      </div>
+    </div>
+    <select class="filter-select" id="arch-company-filter" onchange="filterArchive()">
+      <option value="">${t('allCompanies')}</option>
+      ${companyNames.map(name => `<option>${esc(name)}</option>`).join('')}
+    </select>
+    <select class="filter-select" id="arch-driver-filter" onchange="filterArchive()">
+      <option value="">${t('allDrivers')}</option>
+      ${driverNames.map(name => `<option>${esc(name)}</option>`).join('')}
+    </select>
+    <select class="filter-select" id="arch-contractor-filter" onchange="filterArchive()">
+      <option value="">${t('allContractors')}</option>
+      ${contractorNames.map(name => `<option>${esc(name)}</option>`).join('')}
+    </select>
+    <div class="table-search">
+      <span class="search-icon">📞</span>
+      <input type="text" placeholder="${t('searchByPhone')}" id="arch-phone-search" oninput="filterArchive()">
+    </div>
     <div class="table-search">
       <span class="search-icon">🔍</span>
-      <input type="text" placeholder="${t('searchArchive')}" id="arch-search" oninput="filterArchive()" style="width:220px;">
+      <input type="text" placeholder="${t('searchArchive')}" id="arch-search" oninput="filterArchive()">
     </div>
-    <select class="filter-select" id="arch-status-filter" onchange="filterArchive()">
-      <option value="">All Statuses</option>
-      <option>Delivered</option><option>Pending</option><option>Returned</option><option>Cancelled</option>
-    </select>
-    <input type="date" class="filter-date" id="arch-from" onchange="filterArchive()">
-    <input type="date" class="filter-date" id="arch-to"   onchange="filterArchive()">
+    <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="resetArchiveFilters()" title="${t('resetFilters')}">${ICONS.refreshCcw}</button>
+  </div>
+  <div class="filter-bar">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:0.8rem;color:var(--text-3);white-space:nowrap;">${t('orderDateLabel')}:</span>
+      <input type="date" class="filter-date" id="arch-from" onchange="filterArchive()" title="${t('orderDateFromTitle')}">
+      <span style="color:var(--text-3);">–</span>
+      <input type="date" class="filter-date" id="arch-to"   onchange="filterArchive()" title="${t('orderDateToTitle')}">
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:0.8rem;color:var(--text-3);white-space:nowrap;">${t('archivedDateLabel')}:</span>
+      <input type="date" class="filter-date" id="arch-archived-from" onchange="filterArchive()" title="${t('archivedDateFromTitle')}">
+      <span style="color:var(--text-3);">–</span>
+      <input type="date" class="filter-date" id="arch-archived-to"   onchange="filterArchive()" title="${t('archivedDateToTitle')}">
+    </div>
   </div>
   </div>
+
   <div class="table-container desktop-table">
     <div class="table-header">
-      <span style="font-size:13px;color:var(--text-2);" id="arch-count">Loading...</span>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:var(--text-2);" id="arch-count">Loading...</span>
+        ${canManage ? `
+        <div id="arch-bulk-bar" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span id="arch-bulk-count" style="font-size:12px;color:var(--text-3);"></span>
+          <button class="btn btn-secondary btn-sm" onclick="unarchiveSelected()">↩️ ${t('unarchiveSelectedBtn')}</button>
+          ${canDelete ? `<button class="btn btn-danger btn-sm" onclick="deleteSelectedArchived()">🗑 ${t('deleteSelectedBtn')}</button>` : ''}
+        </div>` : ''}
+      </div>
+      ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportArchivePDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
     </div>
     <div class="table-scroll">
       <table>
         <thead><tr>
-          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('company')}</th><th>${t('driver')}</th>
+          ${canManage ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="arch-select-all" onchange="toggleSelectAllArchived(this)"></th>` : ''}
+          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('company')}</th>
+          <th>${t('driver')}</th><th>${t('contractor')}</th>
           <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
           ${showProfit ? `<th>${t('profitCol')}</th>` : ''}
-          <th>${t('status')}</th><th>${t('date')}</th>
-          ${can('canEditShipments') ? `<th>${t('actions')}</th>` : ''}
+          <th>${t('status')}</th><th>${t('date')}</th><th>${t('archivedDateCol')}</th><th>${t('actions')}</th>
         </tr></thead>
         <tbody id="arch-tbody"></tbody>
       </table>
@@ -866,25 +1360,80 @@ async function renderArchive() {
   </div>
   <div class="mobile-cards" id="arch-mobile"></div>`;
 
-  window._archShips = ships;
+  window._allArchShips = ships;
   filterArchive();
 }
 
-function filterArchive() {
-  const search   = (document.getElementById('arch-search')?.value        || '').toLowerCase();
-  const status   =  document.getElementById('arch-status-filter')?.value || '';
-  const from     =  document.getElementById('arch-from')?.value          || '';
-  const to       =  document.getElementById('arch-to')?.value            || '';
-  const showProfit = can('canViewProfit');
+/** Show a summary in the archive status filter button: all/one/"N selected" — mirrors
+ *  updateStatusFilterLabel() on the Shipments page. */
+function updateArchStatusFilterLabel(statuses) {
+  const el = document.getElementById('arch-status-filter-label');
+  if (!el) return;
+  if (!statuses.length)      el.textContent = t('allStatuses');
+  else if (statuses.length === 1) el.textContent = t(STATUS_CONFIG[statuses[0]].key);
+  else el.textContent = `${statuses.length} ${t('selectedLabel')}`;
+}
 
-  let ships = (window._archShips || []).filter(s => {
-    if (search && !((s.shipNumber + '').includes(search) || (s.customerName || '').toLowerCase().includes(search) || (s.companyName || '').toLowerCase().includes(search))) return false;
-    if (status && s.status !== status) return false;
+/** Normalize an archived shipment's archivedAt (Firestore Timestamp, Date, or ISO string)
+ *  into a plain 'YYYY-MM-DD' string so it can be compared against <input type="date"> values. */
+function archivedDateStr(s) {
+  let d = s.archivedAt;
+  if (!d) return '';
+  if (d.seconds) d = new Date(d.seconds * 1000);
+  else if (typeof d === 'string') d = new Date(d);
+  else if (!(d instanceof Date)) return '';
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+function filterArchive() {
+  const searchRaw   = (document.getElementById('arch-search')?.value || '').trim();
+  const searchNums  = searchRaw.includes(',')
+    ? [...new Set(searchRaw.split(',').map(v => parseInt(v.trim(), 10)).filter(n => !isNaN(n)))]
+    : null;
+  const search      = searchRaw.toLowerCase();
+  const phoneSearch = (document.getElementById('arch-phone-search')?.value || '').trim();
+  const statuses    = [...document.querySelectorAll('.arch-status-check:checked')].map(cb => cb.value);
+  const company     =  document.getElementById('arch-company-filter')?.value    || '';
+  const driver      =  document.getElementById('arch-driver-filter')?.value     || '';
+  const contractor  =  document.getElementById('arch-contractor-filter')?.value || '';
+  const from        =  document.getElementById('arch-from')?.value || '';
+  const to          =  document.getElementById('arch-to')?.value   || '';
+  const archFrom    =  document.getElementById('arch-archived-from')?.value || '';
+  const archTo      =  document.getElementById('arch-archived-to')?.value   || '';
+
+  updateArchStatusFilterLabel(statuses);
+
+  let ships = (window._allArchShips || []).filter(s => {
+    if (searchNums) {
+      if (!searchNums.includes(s.shipNumber)) return false;
+    } else if (search && !(
+      (s.shipNumber + '').includes(search) ||
+      (s.customerName    || '').toLowerCase().includes(search) ||
+      (s.companyName      || '').toLowerCase().includes(search) ||
+      (s.driverName       || '').toLowerCase().includes(search) ||
+      (s.customerAddress  || '').toLowerCase().includes(search)
+    )) return false;
+    if (phoneSearch && !(s.customerPhone || '').includes(phoneSearch)) return false;
+    if (statuses.length && !statuses.includes(s.status)) return false;
+    if (company     && s.companyName    !== company)     return false;
+    if (driver      && s.driverName     !== driver)      return false;
+    if (contractor  && s.contractorName !== contractor)  return false;
     if (from && s.date < from) return false;
     if (to   && s.date > to)   return false;
+    if (archFrom || archTo) {
+      const archDate = archivedDateStr(s);
+      if (archFrom && (!archDate || archDate < archFrom)) return false;
+      if (archTo   && (!archDate || archDate > archTo))   return false;
+    }
     return true;
   });
 
+  window._filteredArchShips = ships; // exact "searched rows" set for export/bulk actions
+
+  const showProfit = can('canViewProfit');
+  const canManage   = can('canArchive');
+  const canDelete   = can('canDeleteShipments');
   let totalDol = 0, totalLeb = 0, totalProfit = 0;
   ships.forEach(s => { totalDol += s.priceDollar || 0; totalLeb += s.priceLeb || 0; totalProfit += s.deliveryProfit || 0; });
 
@@ -893,30 +1442,201 @@ function filterArchive() {
   if (countEl)   countEl.textContent   = `${ships.length} ${t('archivedShipments')}`;
   if (summaryEl) summaryEl.textContent = `$${formatNum(totalDol)} | L.L.${formatNum(totalLeb)}${showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : ''}`;
 
-  const colCount = showProfit
-    ? (can('canEditShipments') ? 10 : 9)
-    : (can('canEditShipments') ?  9 : 8);
+  const colCount = (canManage ? 1 : 0) + (showProfit ? 11 : 10) + 1;
 
   const tbody  = document.getElementById('arch-tbody');
   const mobile = document.getElementById('arch-mobile');
-  if (tbody) tbody.innerHTML = ships.map(s => `
-  <tr>
-    <td class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</td>
-    <td>${esc(s.customerName || '—')}</td>
-    <td>${esc(s.companyName  || '—')}</td>
-    <td>${esc(s.driverName   || '—')}</td>
-    <td class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
-    <td class="font-mono">${formatNum(s.priceLeb || 0)}</td>
-    ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
-    <td>${statusBadge(s.status)}</td>
-    <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.date)}</td>
-    ${can('canEditShipments') ? `<td><button class="btn btn-ghost btn-sm" onclick="viewShipmentArchive('${s.id}')">${t('view')}</button></td>` : ''}
-  </tr>`).join('') || `<tr><td colspan="${colCount}" class="table-empty"><div class="empty-icon">🗄️</div><p>Archive is empty</p></td></tr>`;
+  if (tbody) {
+    window._selectedArchIds = window._selectedArchIds || new Set();
+    tbody.innerHTML = ships.length
+      ? ships.map(s => `
+    <tr>
+      ${canManage ? `<td style="text-align:center;"><input type="checkbox" class="arch-row-check" value="${s.id}" ${window._selectedArchIds.has(s.id) ? 'checked' : ''} onchange="toggleArchRowCheck('${s.id}', this.checked)"></td>` : ''}
+      <td class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</td>
+      <td>${esc(s.customerName || '—')}</td>
+      <td>${esc(s.companyName  || '—')}</td>
+      <td>${esc(s.driverName   || '—')}</td>
+      <td>${esc(s.contractorName || '—')}</td>
+      <td class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
+      <td class="font-mono">${formatNum(s.priceLeb || 0)}</td>
+      ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
+      <td>${statusBadge(s.status)}</td>
+      <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.date)}</td>
+      <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.archivedAt)}</td>
+      <td>
+        <div style="display:flex;gap:4px;">
+          <button class="btn btn-ghost btn-sm btn-icon" onclick="viewShipmentArchive('${s.id}')" title="${t('view')}">👁</button>
+          ${canManage ? `<button class="btn btn-ghost btn-sm btn-icon" onclick="unarchiveShipment('${s.id}')" title="${t('unarchiveBtn')}">↩️</button>` : ''}
+          ${canDelete ? `<button class="btn btn-danger btn-sm btn-icon" onclick="deleteArchivedShipment('${s.id}')" title="${t('deleteBtn')}">🗑</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('')
+      : `<tr><td colspan="${colCount}" class="table-empty"><div class="empty-icon">🗄️</div><p>Archive is empty</p></td></tr>`;
+  }
   if (mobile) mobile.innerHTML = ships.slice(0, 30).map(s => mobileShipCard(s)).join('');
+
+  updateArchSelectionUI();
+}
+
+/** Clear every filter/search control on the Archive page and re-apply — mirrors
+ *  resetShipmentFilters() on the Shipments page. */
+function resetArchiveFilters() {
+  const searchEl = document.getElementById('arch-search');
+  if (searchEl) searchEl.value = '';
+  const phoneEl = document.getElementById('arch-phone-search');
+  if (phoneEl) phoneEl.value = '';
+  document.querySelectorAll('.arch-status-check').forEach(cb => { cb.checked = false; });
+  const company    = document.getElementById('arch-company-filter');
+  const driver     = document.getElementById('arch-driver-filter');
+  const contractor = document.getElementById('arch-contractor-filter');
+  const dateFrom   = document.getElementById('arch-from');
+  const dateTo     = document.getElementById('arch-to');
+  const archFrom   = document.getElementById('arch-archived-from');
+  const archTo     = document.getElementById('arch-archived-to');
+  if (company)    company.value    = '';
+  if (driver)     driver.value     = '';
+  if (contractor) contractor.value = '';
+  if (dateFrom)   dateFrom.value   = '';
+  if (dateTo)     dateTo.value     = '';
+  if (archFrom)   archFrom.value   = '';
+  if (archTo)     archTo.value     = '';
+  filterArchive();
+}
+
+// ===== ROW SELECTION (Archive table) — mirrors the Shipments table's selection logic =====
+
+function toggleArchRowCheck(id, checked) {
+  window._selectedArchIds = window._selectedArchIds || new Set();
+  if (checked) window._selectedArchIds.add(id);
+  else window._selectedArchIds.delete(id);
+  updateArchSelectionUI();
+}
+
+/** Header "select all" checkbox — selects/deselects every row currently visible in the table. */
+function toggleSelectAllArchived(el) {
+  window._selectedArchIds = window._selectedArchIds || new Set();
+  const checked = el.checked;
+  document.querySelectorAll('#arch-tbody .arch-row-check').forEach(cb => {
+    cb.checked = checked;
+    if (checked) window._selectedArchIds.add(cb.value);
+    else window._selectedArchIds.delete(cb.value);
+  });
+  updateArchSelectionUI();
+}
+
+function updateArchSelectionUI() {
+  window._selectedArchIds = window._selectedArchIds || new Set();
+
+  const rowChecks = [...document.querySelectorAll('#arch-tbody .arch-row-check')];
+  const total = rowChecks.length;
+  const checkedCount = rowChecks.filter(cb => cb.checked).length;
+
+  const selectAll = document.getElementById('arch-select-all');
+  if (selectAll) {
+    selectAll.checked = total > 0 && checkedCount === total;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < total;
+  }
+
+  const n = window._selectedArchIds.size;
+  const bar = document.getElementById('arch-bulk-bar');
+  if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
+  const countEl = document.getElementById('arch-bulk-count');
+  if (countEl) countEl.textContent = `${n} ${t('selectedLabel')}`;
+}
+
+// ===== REVERSE ARCHIVE (send back to Orders) =====
+
+/** Move one archived order back into the active Shipments list, dropping the
+ *  archive-only archivedAt/archivedBy fields so it looks like a normal shipment again. */
+async function unarchiveShipment(id) {
+  if (!can('canArchive')) { toast(t('noPermission'), 'error'); return; }
+  confirmAction(t('unarchiveConfirmTitle'), t('unarchiveConfirmMsg'), async () => {
+    try {
+      if (db) {
+        const doc = await db.collection('sonick_archive').doc(id).get();
+        if (doc.exists) {
+          const { archivedAt, archivedBy, ...data } = doc.data();
+          await db.collection('sonick_shipments').doc(id).set(data);
+          await db.collection('sonick_archive').doc(id).delete();
+        }
+      }
+      toast(t('orderUnarchived'), 'success');
+      window._selectedArchIds?.delete(id);
+      await refreshArchiveData();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+/** Bulk-unarchive every currently selected archived order (or all, if "select all" was used)
+ *  back into the active Orders/Shipments list — behind a confirm dialog. */
+async function unarchiveSelected() {
+  if (!can('canArchive')) { toast(t('noPermission'), 'error'); return; }
+  const ids = [...(window._selectedArchIds || [])];
+  if (!ids.length) return;
+
+  confirmAction(t('unarchiveConfirmTitle'), `${t('unarchiveGroupConfirmMsg')} (${ids.length}).`, async () => {
+    try {
+      if (db) {
+        const docs = await Promise.all(ids.map(id => db.collection('sonick_archive').doc(id).get()));
+        const CHUNK = 200; // set+delete = 2 writes/doc, stay well under Firestore's 500-write batch limit
+        for (let i = 0; i < docs.length; i += CHUNK) {
+          const batch = db.batch();
+          docs.slice(i, i + CHUNK).forEach(doc => {
+            if (!doc.exists) return;
+            const { archivedAt, archivedBy, ...data } = doc.data();
+            batch.set(db.collection('sonick_shipments').doc(doc.id), data);
+            batch.delete(db.collection('sonick_archive').doc(doc.id));
+          });
+          await batch.commit();
+        }
+      }
+      toast(`${ids.length} ${t('ordersUnarchivedLabel')}`, 'success');
+      window._selectedArchIds = new Set();
+      await refreshArchiveData();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+// ===== PERMANENT DELETE (Archive table) =====
+
+async function deleteArchivedShipment(id) {
+  if (!can('canDeleteShipments')) { toast(t('noPermission'), 'error'); return; }
+  confirmAction(t('deleteArchivedConfirm'), t('cannotUndo'), async () => {
+    try {
+      if (db) await db.collection('sonick_archive').doc(id).delete();
+      toast(t('archivedOrderDeleted'), 'success');
+      window._selectedArchIds?.delete(id);
+      await refreshArchiveData();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+/** Permanently delete every currently selected archived order (or all, if "select all" was
+ *  used) — behind a confirm dialog, same as the single-row delete. */
+async function deleteSelectedArchived() {
+  if (!can('canDeleteShipments')) { toast(t('noPermission'), 'error'); return; }
+  const ids = [...(window._selectedArchIds || [])];
+  if (!ids.length) return;
+
+  confirmAction(t('deleteArchivedConfirm'), `${t('cannotUndo')} (${ids.length})`, async () => {
+    try {
+      if (db) {
+        const CHUNK = 400; // delete-only = 1 write/doc
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const batch = db.batch();
+          ids.slice(i, i + CHUNK).forEach(id => batch.delete(db.collection('sonick_archive').doc(id)));
+          await batch.commit();
+        }
+      }
+      toast(`${ids.length} ${t('archivedOrdersDeletedLabel')}`, 'success');
+      window._selectedArchIds = new Set();
+      await refreshArchiveData();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
 }
 
 async function viewShipmentArchive(id) {
-  let s = (window._archShips || []).find(x => x.id === id);
+  let s = (window._allArchShips || []).find(x => x.id === id);
   if (!s && db) {
     try { const doc = await db.collection('sonick_archive').doc(id).get(); if (doc.exists) s = { id, ...doc.data() }; } catch (e) {}
   }
@@ -931,6 +1651,7 @@ async function viewShipmentArchive(id) {
     <div class="detail-field"><div class="detail-label">${t('company')}</div><div class="detail-value">${esc(s.companyName  || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('driver')}</div><div class="detail-value">${esc(s.driverName   || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('date')}</div><div class="detail-value">${fmtDate(s.date)}</div></div>
+    <div class="detail-field"><div class="detail-label">${t('archivedDateCol')}</div><div class="detail-value">${fmtDate(s.archivedAt)}</div></div>
   </div>
   <div class="financial-summary">
     <div class="fin-item"><div class="fin-label">${t('priceUSD')}</div><div class="fin-value">$${formatNum(s.priceDollar || 0)}</div></div>
@@ -1606,10 +2327,14 @@ async function toggleUserActive(id, currentlyActive) {
 // ===================================================
 //  SETTINGS
 // ===================================================
+let _exportColsDraft = null; // working copy of the export-columns list while Settings is open; rebuilt fresh each time renderSettings() runs
+
 async function renderSettings() {
   const content = document.getElementById('page-content');
   let settings = { dollarRate: dollPrice };
   try { if (db) { const doc = await db.collection('sonick_settings').doc('general').get(); if (doc.exists) settings = doc.data(); } } catch (e) {}
+  if (Array.isArray(settings.exportColumns)) exportColumnsConfig = settings.exportColumns; // keep the export functions' cache in sync with what Settings just fetched
+  _exportColsDraft = resolveExportColumnsFull();
 
   content.innerHTML = `
   ${pageHeader(t('settings'), [t('system')])}
@@ -1620,6 +2345,20 @@ async function renderSettings() {
       <div style="display:flex;align-items:center;gap:8px;">
         <input type="number" id="s-dollrate" class="form-input" value="${settings.dollarRate||''}" style="width:160px;" placeholder="e.g. 89500">
         ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveDollarRate()">Save</button>` : ''}
+      </div>
+    </div>
+  </div>
+  <div class="settings-section">
+    <div class="settings-section-title">📊 Export Columns</div>
+    <div class="settings-row">
+      <div class="settings-row-desc" style="max-width:640px;">Choose which shipment fields are included — and in what order — when exporting to Excel or PDF, from both the Shipments and Archive pages.</div>
+    </div>
+    <div id="export-columns-list">${renderExportColumnsRows()}</div>
+    <div class="settings-row">
+      <div></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="resetExportColumnsDefault()">Reset to Default</button>
+        ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveExportColumns()">Save</button>` : ''}
       </div>
     </div>
   </div>
@@ -1665,6 +2404,56 @@ async function saveDollarRate() {
     if (ratEl) ratEl.textContent = formatNum(rate) + ' L.L.';
     if (el)    el.style.display  = 'flex';
     toast(t('rateUpdated'), 'success');
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+}
+
+/** Renders the export-columns checklist rows from the current draft (_exportColsDraft) —
+ *  called both by renderSettings() on first paint and by _refreshExportColumnsList() after
+ *  every toggle/reorder, so only this list re-renders rather than the whole Settings page. */
+function renderExportColumnsRows() {
+  return _exportColsDraft.map((c, i) => `
+    <div class="settings-row">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin:0;">
+        <input type="checkbox" ${c.visible ? 'checked' : ''} onchange="toggleExportColumn('${c.key}')">
+        <span class="settings-row-label">${esc(c.label)}</span>
+      </label>
+      <div style="display:flex;gap:4px;">
+        <button class="btn btn-ghost btn-sm btn-icon" title="Move up"   ${i === 0 ? 'disabled' : ''} onclick="moveExportColumn('${c.key}', -1)">▲</button>
+        <button class="btn btn-ghost btn-sm btn-icon" title="Move down" ${i === _exportColsDraft.length - 1 ? 'disabled' : ''} onclick="moveExportColumn('${c.key}', 1)">▼</button>
+      </div>
+    </div>`).join('');
+}
+
+function _refreshExportColumnsList() {
+  const list = document.getElementById('export-columns-list');
+  if (list) list.innerHTML = renderExportColumnsRows();
+}
+
+function toggleExportColumn(key) {
+  const col = _exportColsDraft.find(c => c.key === key);
+  if (col) col.visible = !col.visible;
+  _refreshExportColumnsList();
+}
+
+function moveExportColumn(key, dir) {
+  const i = _exportColsDraft.findIndex(c => c.key === key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= _exportColsDraft.length) return;
+  [_exportColsDraft[i], _exportColsDraft[j]] = [_exportColsDraft[j], _exportColsDraft[i]];
+  _refreshExportColumnsList();
+}
+
+function resetExportColumnsDefault() {
+  _exportColsDraft = EXPORT_COLUMN_DEFS.map(c => ({ ...c, visible: true }));
+  _refreshExportColumnsList();
+}
+
+async function saveExportColumns() {
+  const payload = _exportColsDraft.map(c => ({ key: c.key, visible: c.visible }));
+  try {
+    if (db) await db.collection('sonick_settings').doc('general').set({ exportColumns: payload }, { merge: true });
+    exportColumnsConfig = payload;
+    toast(t('exportColumnsSaved'), 'success');
   } catch (e) { toast(t('error') + e.message, 'error'); }
 }
 

@@ -42,8 +42,7 @@
 
 <!-- LOADING -->
 <div id="loading-screen">
-  <div class="spinner"></div>
-  <p style="color:var(--text-3);font-size:13px;">Connecting to Sonick...</p>
+  <img class="loading-logo-img" src="assets/logo-mark.png" alt="Sonick">
 </div>
 
 <!-- LOGIN -->
@@ -290,6 +289,32 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="cancelPromptModal()">Cancel</button>
       <button class="btn btn-primary" id="modal-prompt-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-return-details">
+  <div class="modal" style="max-width:420px;">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-return-title">Withdraw Order</h2>
+      <button class="modal-close" onclick="cancelWithdrawDetailsModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="modal-return-message" style="color:var(--text-2);margin-bottom:14px;font-size:0.9rem;"></p>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" id="modal-return-usd-label">Withdrawn Amount ($)</label>
+          <input type="number" step="0.01" id="ret-amount-usd" class="form-input" placeholder="0.00">
+        </div>
+        <div class="form-group">
+          <label class="form-label" id="modal-return-lbp-label">Withdrawn Amount (L.L.)</label>
+          <input type="number" id="ret-amount-lbp" class="form-input" placeholder="0.00">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="cancelWithdrawDetailsModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-return-ok">Confirm</button>
     </div>
   </div>
 </div>
