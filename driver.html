@@ -29,19 +29,22 @@
 <script src="js/theme.js"></script>
 <!-- Translations only (t() / TRANSLATIONS) — driver.js drives its own language toggle -->
 <script src="js/i18n.js"></script>
+<!-- Phone country-code/flag helpers (display only here — read-only customer phone) -->
+<script src="js/countries.js"></script>
+<script src="js/phone.js"></script>
 </head>
 <body>
 
 <!-- LOADING -->
 <div id="loading-screen">
-  <img class="loading-logo-img" src="assets/logo-mark.png" alt="Sonick">
+  <img class="loading-logo-img logo-full-img" src="assets/logo-full.png" alt="Sonick">
 </div>
 
 <!-- LOGIN -->
 <div id="login-screen" class="hidden">
   <div class="login-card driver-login-card">
     <div class="login-logo">
-      <img class="logo-mark-img logo-mark-img-lg" src="assets/logo-mark.png" alt="Sonick">
+      <img class="login-logo-img logo-full-img driver-login-logo-img" src="assets/logo-full.png" alt="Sonick">
       <h1 id="driver-login-title">Driver Portal</h1>
       <p id="driver-login-subtitle">Sign in to view your assigned orders</p>
     </div>

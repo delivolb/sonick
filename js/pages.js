@@ -11,8 +11,9 @@ function renderHome() {
   const content = document.getElementById('page-content');
   content.innerHTML = `
   <div class="home-blank">
-    <img class="home-blank-logo" src="assets/logo-mark.png" alt="Sonick">
+    <img class="home-blank-logo logo-full-img" src="assets/logo-full.png" alt="Sonick">
   </div>`;
+  syncLogoImages(currentLang);
 }
 
 async function renderDashboard() {
@@ -59,12 +60,13 @@ async function renderDashboard() {
     ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.trendingUp}</div><div class="stat-label">${t('profit')}</div><div class="stat-value mono">$${formatNum(stats.profit)}</div></div>` : ''}
   </div>
 
-  ${can('canCreateShipments') || can('canManageCompanies') || can('canManageDrivers') ? `
+  ${can('canCreateShipments') || can('canManageCompanies') || can('canManageContractors') || can('canManageDrivers') ? `
   <div class="section-header"><div class="section-title">${t('quickActions')}</div></div>
   <div class="quick-actions">
     ${can('canCreateShipments') ? `<div class="quick-action" onclick="openNewShipmentModal()"><div class="qa-icon">${ICONS.plusCircle}</div><span>${t('newShipment')}</span></div>` : ''}
     <div class="quick-action" onclick="navigate('shipments')"><div class="qa-icon">${ICONS.package}</div><span>${t('viewShipments')}</span></div>
     ${can('canManageCompanies') ? `<div class="quick-action" onclick="navigate('companies')"><div class="qa-icon">${ICONS.building}</div><span>${t('companies')}</span></div>` : ''}
+    ${can('canManageContractors') ? `<div class="quick-action" onclick="navigate('contractors')"><div class="qa-icon">${ICONS.handshake}</div><span>${t('contractors')}</span></div>` : ''}
     ${can('canManageDrivers')   ? `<div class="quick-action" onclick="navigate('drivers')"><div class="qa-icon">${ICONS.truck}</div><span>${t('drivers')}</span></div>`   : ''}
     ${can('canViewDebts')       ? `<div class="quick-action" onclick="navigate('debts')"><div class="qa-icon">${ICONS.wallet}</div><span>${t('payments')}</span></div>`       : ''}
     <div class="quick-action" onclick="navigate('archive')"><div class="qa-icon">${ICONS.archive}</div><span>${t('archive')}</span></div>
@@ -158,18 +160,32 @@ async function refreshShipmentsData() {
   filterShipments();
 }
 
+/** Persisted (localStorage) preference for whether the Profit column and its total are shown
+ *  on the Shipments and Archive pages — separate from the canViewProfit permission gate. Even
+ *  staff who CAN view profit start with it hidden (screen-share/shoulder-surf safety); a
+ *  toggle button (shown only when canViewProfit) reveals/hides it, and the choice persists
+ *  across reloads. */
+const PROFIT_VISIBLE_KEY = 'sonick_show_profit';
+function isProfitVisible() { return localStorage.getItem(PROFIT_VISIBLE_KEY) === 'true'; }
+function toggleProfitVisibility() {
+  localStorage.setItem(PROFIT_VISIBLE_KEY, isProfitVisible() ? 'false' : 'true');
+  if (currentPage === 'shipments') renderShipments();
+  else if (currentPage === 'archive') renderArchive();
+}
+
 async function renderShipments() {
   if (!can('canViewShipments')) { renderAccessDenied(); return; }
   const content = document.getElementById('page-content');
 
-  const showProfit = can('canViewProfit');
+  const canSeeProfit = can('canViewProfit');
+  const showProfit   = canSeeProfit && isProfitVisible();
   window._selectedShipIds = new Set(); // fresh row-selection state each time this page opens
 
   // Filter dropdowns list all companies/drivers — not just ones that appear in the
   // currently loaded shipments — so every entity is always selectable.
   const companyNames    = companies_cache.map(c => c.name).filter(Boolean).sort();
   const driverNames     = drivers_cache.map(d => d.name).filter(Boolean).sort();
-  const contractorNames = companies_cache.map(c => c.name).filter(Boolean).sort();
+  const contractorNames = contractors_cache.map(c => c.name).filter(Boolean).sort();
 
   content.innerHTML = `
   ${pageHeader(t('shipments'), [t('operations')])}
@@ -191,11 +207,11 @@ async function renderShipments() {
       <option value="">${t('allCompanies')}</option>
       ${companyNames.map(name => `<option>${esc(name)}</option>`).join('')}
     </select>
-    <select class="filter-select" id="ship-driver-filter" onchange="filterShipments()">
+    <select class="filter-select" id="ship-driver-filter" onchange="if(this.value){document.getElementById('ship-contractor-filter').value='';} filterShipments()">
       <option value="">${t('allDrivers')}</option>
       ${driverNames.map(name => `<option>${esc(name)}</option>`).join('')}
     </select>
-    <select class="filter-select" id="ship-contractor-filter" onchange="filterShipments()">
+    <select class="filter-select" id="ship-contractor-filter" onchange="if(this.value){document.getElementById('ship-driver-filter').value='';} filterShipments()">
       <option value="">${t('allContractors')}</option>
       ${contractorNames.map(name => `<option>${esc(name)}</option>`).join('')}
     </select>
@@ -236,9 +252,9 @@ async function renderShipments() {
         <label class="form-label">${t('customer')}</label>
         <input type="text" id="fo-customer" class="form-input" placeholder="${t('recipientNamePlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
-      <div class="form-group fo-f-phone" style="margin-bottom:0;min-width:140px;">
+      <div class="form-group fo-f-phone" style="margin-bottom:0;min-width:190px;">
         <label class="form-label">${t('phone')}</label>
-        <input type="tel" id="fo-phone" class="form-input" placeholder="+961..." onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+        ${phoneFieldHTML('fo-phone', '', `onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}"`)}
       </div>
       <div class="form-group fo-f-address" style="margin-bottom:0;min-width:150px;">
         <label class="form-label">${t('address')}</label>
@@ -283,25 +299,26 @@ async function renderShipments() {
         </div>` : ''}
       </div>
       ${can('canArchive')  ? `<button class="btn btn-secondary btn-sm" onclick="archiveFilteredShipments()">${t('archiveGroupBtn')}</button>` : ''}
+      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
+    </div>
+    <div class="table-footer">
+      <span id="ships-total-label" style="color:var(--text-3);"></span>
+      <span id="ships-summary"     style="color:var(--text-2);font-family:var(--mono);"></span>
     </div>
     <div class="table-scroll">
       <table id="ships-table">
         <thead><tr>
           ${can('canEditShipments') ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="ships-select-all" onchange="toggleSelectAllShipments(this)"></th>` : ''}
-          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('company')}</th>
+          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
           <th>${t('driver')}</th><th>${t('contractor')}</th>
           <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
-          ${showProfit ? `<th>${t('profitCol')}</th>` : ''}
+          ${showProfit ? `<th>${t('profitCol')}</th><th>${t('driverProfitCol')}</th><th>${t('contractorProfitCol')}</th>` : ''}
           <th>${t('status')}</th><th>${t('date')}</th><th>${t('actions')}</th>
         </tr></thead>
         <tbody id="ships-tbody"></tbody>
       </table>
-    </div>
-    <div class="table-footer">
-      <span id="ships-total-label" style="color:var(--text-3);"></span>
-      <span id="ships-summary"     style="color:var(--text-2);font-family:var(--mono);"></span>
     </div>
   </div>
   <div class="mobile-cards" id="ships-mobile"></div>`;
@@ -355,7 +372,7 @@ function updateOrderEntryBars(companyName, driverName, contractorName) {
 
   const companyObj    = companyName    ? companies_cache.find(c => c.name === companyName)    : null;
   const driverObj      = driverName     ? drivers_cache.find(d => d.name === driverName)        : null;
-  const contractorObj = contractorName ? companies_cache.find(c => c.name === contractorName)  : null;
+  const contractorObj = contractorName ? contractors_cache.find(c => c.name === contractorName)  : null;
 
   if (showFast) {
     window._fastOrderFixed = {
@@ -427,10 +444,20 @@ async function quickAddOrder() {
   }
 
   const priceRaw     = document.getElementById('fo-price')?.value;
-  const priceDollar  = parseFloat(priceRaw);
+  let priceDollar    = parseFloat(priceRaw);
   if (priceRaw === '' || priceRaw == null || isNaN(priceDollar)) { toast(t('priceUSD'), 'error'); return; }
 
-  const priceLeb = parseFloat(document.getElementById('fo-priceleb')?.value) || 0;
+  let priceLeb = parseFloat(document.getElementById('fo-priceleb')?.value) || 0;
+
+  /* A negative price in Quick Add is a shorthand for "this order is withdrawn": store the
+   *  absolute value as both the order price and the withdrawn amount, and set status to
+   *  Withdrawn automatically instead of the usual Pending — same convention already used
+   *  when bulk-changing a shipment's status to Withdrawn (see commitBulkStatus above). */
+  const isWithdrawn = priceDollar < 0 || priceLeb < 0;
+  if (isWithdrawn) {
+    priceDollar = Math.abs(priceDollar);
+    priceLeb    = Math.abs(priceLeb);
+  }
 
   const customerName = document.getElementById('fo-customer')?.value?.trim() || '';
 
@@ -438,20 +465,20 @@ async function quickAddOrder() {
     shipNumber,
     date:                   today(),
     customerName,
-    customerPhone:          document.getElementById('fo-phone')?.value?.trim()   || '',
+    customerPhone:          getPhoneFieldValue('fo-phone'),
     customerAddress:        document.getElementById('fo-address')?.value?.trim() || '',
     companyId:              fixed.companyId,    companyName:    fixed.companyName,
     driverId:               fixed.driverId,     driverName:     fixed.driverName,
     contractorId:           fixed.contractorId, contractorName: fixed.contractorName,
-    status:                 'Pending',
+    status:                 isWithdrawn ? 'Withdrawn' : 'Pending',
     priceDollar,
     priceLeb,
     driverDeliveryCost:     fixed.driverDeliveryCost,
     contractorDeliveryCost: fixed.contractorDeliveryCost,
     deliveryProfit:         fixed.deliveryProfit,
     returnedDeliveryCost:   0,
-    withdrawnAmountDollar:  0,
-    withdrawnAmountLeb:     0,
+    withdrawnAmountDollar:  isWithdrawn ? priceDollar : 0,
+    withdrawnAmountLeb:     isWithdrawn ? priceLeb    : 0,
     description:            document.getElementById('fo-desc')?.value?.trim() || '',
     createdAt:              firebase.firestore.FieldValue.serverTimestamp(),
     createdBy:              currentUserData?.id || '',
@@ -461,10 +488,10 @@ async function quickAddOrder() {
 
   try {
     if (db) await db.collection('sonick_shipments').add(payload);
-    toast(t('shipmentCreated'), 'success');
+    toast(isWithdrawn ? `${t('shipmentCreated')} — ${t('statusWithdrawn')}` : t('shipmentCreated'), 'success');
     document.getElementById('fo-shipnum').value   = '';
     document.getElementById('fo-customer').value  = '';
-    document.getElementById('fo-phone').value     = '';
+    clearPhoneField('fo-phone');
     document.getElementById('fo-price').value     = '';
     document.getElementById('fo-priceleb').value  = '';
     document.getElementById('fo-address').value   = '';
@@ -477,7 +504,18 @@ async function quickAddOrder() {
 }
 
 /** Assign one or more existing shipments — identified by ship number, comma-separated —
- *  to the driver/contractor fixed by the active filters (Bulk Assign bar). */
+ *  to the driver/contractor fixed by the active filters (Bulk Assign bar).
+ *
+ *  Order numbers are checked against the live shipment list first:
+ *   - Numbers with no matching shipment are collected as "not found" and never silently
+ *     ignored — they're surfaced to the admin (toast if everything else is clean, or in
+ *     the confirmation modal alongside any reassignment warnings).
+ *   - Matched shipments that are already assigned to a *different* driver/contractor than
+ *     the one being applied are treated as conflicts: instead of overwriting them right
+ *     away, a confirmation modal lists each one (current → new assignment) with a checkbox
+ *     so the admin explicitly opts in per order before anything is overwritten.
+ *   - Matched shipments with no conflicting existing assignment are applied immediately.
+ */
 async function bulkAssignOrders() {
   const fixed = window._bulkAssignFixed;
   if (!fixed) return;
@@ -491,8 +529,6 @@ async function bulkAssignOrders() {
   const updates = {};
   if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName; }
   if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; }
-  updates.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
-  updates.updatedBy = currentUserData?.id || '';
 
   const allShips = window._allShips || [];
   const matched  = [];
@@ -502,15 +538,47 @@ async function bulkAssignOrders() {
     if (hits.length) matched.push(...hits); else notFound.push(n);
   });
 
-  if (!matched.length) { toast(t('noMatchingOrders'), 'error'); return; }
+  if (!matched.length) {
+    toast(`${t('noMatchingOrders')}: ${notFound.join(', ')}`, 'error');
+    return;
+  }
+
+  // A shipment "conflicts" if it already carries a driver/contractor that differs from
+  // the one this assignment would set. Assigning to the same driver/contractor again, or
+  // filling in a field that was previously empty, is not a conflict.
+  const conflicts    = [];
+  const nonConflicts = [];
+  matched.forEach(s => {
+    const driverConflict     = updates.driverId     && s.driverId     && s.driverId     !== updates.driverId;
+    const contractorConflict = updates.contractorId && s.contractorId && s.contractorId !== updates.contractorId;
+    if (driverConflict || contractorConflict) conflicts.push(s); else nonConflicts.push(s);
+  });
+
+  if (!conflicts.length) {
+    await _applyBulkAssign(nonConflicts, updates, notFound);
+    return;
+  }
+
+  openReassignConfirmModal(nonConflicts, conflicts, notFound, updates);
+}
+
+/** Commit the driver/contractor update for a set of shipments (no conflicts to resolve). */
+async function _applyBulkAssign(ships, updates, notFound) {
+  if (!ships.length) {
+    if (notFound.length) toast(`${t('noMatchingOrders')}: ${notFound.join(', ')}`, 'error');
+    return;
+  }
+  const payload = { ...updates };
+  payload.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  payload.updatedBy = currentUserData?.id || '';
 
   try {
     if (db) {
       const batch = db.batch();
-      matched.forEach(s => batch.update(db.collection('sonick_shipments').doc(s.id), updates));
+      ships.forEach(s => batch.update(db.collection('sonick_shipments').doc(s.id), payload));
       await batch.commit();
     }
-    const msg = `${matched.length} ${t('ordersAssignedLabel')}` +
+    const msg = `${ships.length} ${t('ordersAssignedLabel')}` +
       (notFound.length ? ` — ${t('notFoundLabel')}: ${notFound.join(', ')}` : '');
     toast(msg, 'success');
     document.getElementById('ba-shipnums').value = '';
@@ -519,6 +587,78 @@ async function bulkAssignOrders() {
   } catch (e) {
     toast(t('errorSaving') + e.message, 'error');
   }
+}
+
+let _reassignState = null; // { nonConflicts, conflicts, notFound, updates }
+
+/** Open the confirmation modal listing every shipment whose existing driver/contractor
+ *  would be overwritten, each with its own checkbox (checked by default), plus a plain
+ *  warning line for any order numbers that don't exist at all. */
+function openReassignConfirmModal(nonConflicts, conflicts, notFound, updates) {
+  _reassignState = { nonConflicts, conflicts, notFound, updates };
+
+  document.getElementById('reassign-confirm-title').textContent = t('reassignConfirmTitle');
+  document.getElementById('reassign-confirm-intro').textContent = t('reassignConfirmIntro');
+  document.getElementById('reassign-select-all-label').textContent = t('reassignSelectAll');
+  document.getElementById('reassign-select-all').checked = true;
+  document.getElementById('reassign-confirm-ok').textContent = t('reassignConfirmBtn');
+
+  const list = document.getElementById('reassign-confirm-list');
+  if (list) {
+    list.innerHTML = conflicts.map(s => {
+      const currentName = updates.driverId
+        ? (s.driverName || '')
+        : (s.contractorName || '');
+      const newName = updates.driverId ? (updates.driverName || '') : (updates.contractorName || '');
+      return `
+      <div class="settings-row" style="padding:8px 4px;align-items:flex-start;">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0;">
+          <input type="checkbox" class="reassign-order-check" data-id="${esc(s.id)}" checked>
+          <span>
+            <span class="settings-row-label" style="display:block;">#${s.shipNumber} — ${esc(s.customerName || '')}</span>
+            <span style="display:block;font-size:0.8rem;color:var(--text-3);margin-top:2px;">
+              ${t('reassignCurrentlyLabel')}: ${esc(currentName)} → ${t('reassignNewLabel')}: ${esc(newName)}
+            </span>
+          </span>
+        </label>
+      </div>`;
+    }).join('');
+  }
+
+  const notFoundBlock = document.getElementById('reassign-notfound-block');
+  if (notFoundBlock) {
+    if (notFound.length) {
+      notFoundBlock.style.display = 'block';
+      notFoundBlock.textContent = `${t('reassignNotFoundIntro')} ${notFound.join(', ')}`;
+    } else {
+      notFoundBlock.style.display = 'none';
+      notFoundBlock.textContent = '';
+    }
+  }
+
+  openModal('modal-reassign-confirm');
+}
+
+function toggleReassignSelectAll(checked) {
+  document.querySelectorAll('.reassign-order-check').forEach(cb => { cb.checked = checked; });
+}
+
+/** Apply the bulk assignment: every non-conflicting matched order, plus whichever
+ *  conflicting orders are still checked in the confirmation modal. */
+async function confirmBulkReassign() {
+  if (!_reassignState) return;
+  const { nonConflicts, conflicts, notFound, updates } = _reassignState;
+
+  const checkedIds = new Set(
+    [...document.querySelectorAll('.reassign-order-check:checked')].map(cb => cb.dataset.id)
+  );
+  const approvedConflicts = conflicts.filter(s => checkedIds.has(s.id));
+  const toApply = [...nonConflicts, ...approvedConflicts];
+
+  closeModal('modal-reassign-confirm');
+  _reassignState = null;
+
+  await _applyBulkAssign(toApply, updates, notFound);
 }
 
 function filterShipments() {
@@ -560,9 +700,10 @@ function filterShipments() {
 
   window._filteredShips = ships; // exact "searched rows" set, used by archiveFilteredShipments()
 
-  const showProfit = can('canViewProfit');
+  const showProfit = can('canViewProfit') && isProfitVisible();
   let totalDol = 0, totalLeb = 0, totalProfit = 0;
   let withdrawnDol = 0, withdrawnLeb = 0, withdrawnCount = 0;
+  let driverProfitTotal = 0, contractorProfitTotal = 0;
   ships.forEach(s => {
     totalDol    += s.priceDollar    || 0;
     totalLeb    += s.priceLeb       || 0;
@@ -573,6 +714,8 @@ function filterShipments() {
       withdrawnLeb += s.withdrawnAmountLeb    || 0;
       withdrawnCount++;
     }
+    driverProfitTotal     += s.driverDeliveryCost     || 0;
+    contractorProfitTotal += s.contractorDeliveryCost || 0;
   });
   const netDol = totalDol - withdrawnDol;
   const netLeb = totalLeb - withdrawnLeb;
@@ -586,6 +729,9 @@ function filterShipments() {
   if (countEl)   countEl.textContent   = `${ships.length} ${t('shipments')}`;
   if (summaryEl) summaryEl.textContent = `${t('total')} $${formatNum(totalDol)} | L.L. ${formatNum(totalLeb)}`
     + (showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : '')
+    + (showProfit && driver && !contractor     ? ` | ${t('driverProfitLabel')}: $${formatNum(driverProfitTotal)}`         : '')
+    + (showProfit && contractor && !driver     ? ` | ${t('contractorProfitLabel')}: $${formatNum(contractorProfitTotal)}` : '')
+    + (showProfit && driver && contractor      ? ` | ${t('driverProfitLabel')}: $${formatNum(driverProfitTotal)} | ${t('contractorProfitLabel')}: $${formatNum(contractorProfitTotal)}` : '')
     + (withdrawnCount ? ` | ${t('withdrawnLabel')}: $${formatNum(withdrawnDol)} / L.L. ${formatNum(withdrawnLeb)} | ${t('netRemainingLabel')}: $${formatNum(netDol)} / L.L. ${formatNum(netLeb)}` : '');
   if (totalEl)   totalEl.textContent   = `${t('showing')} ${ships.length} ${t('of')} ${(window._allShips || []).length} ${t('shipments')}`;
 
@@ -600,14 +746,17 @@ function filterShipments() {
           <td ${dbl('shipNumber')}><span class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</span></td>
           <td>
             <div ${dbl('customerName')} style="font-weight:500;">${esc(s.customerName || '—')}</div>
-            <div ${dbl('customerPhone')} style="font-size:11px;color:var(--text-3);">${esc(s.customerPhone || '')}</div>
+            <div ${dbl('customerPhone')} style="font-size:11px;color:var(--text-3);">${s.customerPhone ? esc(formatPhoneWithFlag(s.customerPhone)) : ''}</div>
           </td>
+          <td ${dbl('customerAddress')} style="max-width:180px;white-space:normal;">${esc(s.customerAddress || '—')}</td>
           <td ${dbl('companyId')}>${esc(s.companyName    || '—')}</td>
           <td ${dbl('driverId')}>${esc(s.driverName     || '—')}</td>
           <td ${dbl('contractorId')}>${esc(s.contractorName || '—')}</td>
           <td ${dbl('priceDollar')} class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
           <td ${dbl('priceLeb')} class="font-mono">${formatNum(s.priceLeb || 0)}</td>
-          ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
+          ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>
+          <td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>
+          <td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
           <td ${dbl('status')}>${statusBadge(s.status)}</td>
           <td ${dbl('date')} style="color:var(--text-3);font-size:12px;">${fmtDate(s.date || s.createdAt)}</td>
           <td>
@@ -620,7 +769,7 @@ function filterShipments() {
           </td>
         </tr>`;
         }).join('')
-      : `<tr><td colspan="${(canEditCells ? 1 : 0) + (showProfit ? 11 : 10)}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
+      : `<tr><td colspan="${(canEditCells ? 1 : 0) + (showProfit ? 14 : 11)}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
   }
 
   updateShipSelectionUI();
@@ -702,6 +851,18 @@ function applyBulkStatus() {
   const newStatus = document.getElementById('bulk-status-select')?.value;
   if (!newStatus) return;
 
+  const allShips = window._allShips || [];
+  const unassigned = ids.filter(id => {
+    const ship = allShips.find(x => x.id === id);
+    return ship && !ship.driverId && !ship.contractorId;
+  });
+  const validIds = ids.filter(id => !unassigned.includes(id));
+
+  if (unassigned.length) {
+    toast(`${unassigned.length} ${t('bulkAssignDriverOrContractorFirst')}`, 'error');
+  }
+  if (!validIds.length) return;
+
   if (newStatus === 'Returned-Paid') {
     promptInput(
       {
@@ -714,12 +875,12 @@ function applyBulkStatus() {
       },
       (costStr) => {
         const returnedDeliveryCost = parseFloat(costStr) || 0;
-        commitBulkStatus(ids, newStatus, { returnedDeliveryCost });
+        commitBulkStatus(validIds, newStatus, { returnedDeliveryCost });
       },
       () => {} // cancelled — keep original statuses
     );
   } else {
-    commitBulkStatus(ids, newStatus, {});
+    commitBulkStatus(validIds, newStatus, {});
   }
 }
 
@@ -765,6 +926,7 @@ const INLINE_EDIT_FIELDS = {
   shipNumber:    { kind: 'number' },
   customerName:  { kind: 'text'   },
   customerPhone: { kind: 'text'   },
+  customerAddress: { kind: 'text' },
   companyId:     { kind: 'company'     },
   driverId:      { kind: 'driver'      },
   contractorId:  { kind: 'contractor'  },
@@ -784,12 +946,18 @@ function inlineEditCell(el, id, field) {
   const cfg = INLINE_EDIT_FIELDS[field];
   if (!s || !cfg) return;
 
+  if (field === 'status' && !s.driverId && !s.contractorId) {
+    toast(t('assignDriverOrContractorFirst'), 'error');
+    return;
+  }
+
   const prevHTML = el.innerHTML;
   let editorHTML;
 
   if (cfg.kind === 'company' || cfg.kind === 'contractor') {
     const selectedId = cfg.kind === 'company' ? s.companyId : s.contractorId;
-    const opts = companies_cache.map(c => `<option value="${c.id}" ${selectedId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+    const sourceCache = cfg.kind === 'company' ? companies_cache : contractors_cache;
+    const opts = sourceCache.map(c => `<option value="${c.id}" ${selectedId === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
     editorHTML = `<select class="inline-edit-input form-select"><option value="">${cfg.kind === 'company' ? t('selectCompanyOption') : t('noneOption')}</option>${opts}</select>`;
   } else if (cfg.kind === 'driver') {
     const opts = drivers_cache.map(d => `<option value="${d.id}" ${s.driverId === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
@@ -866,7 +1034,7 @@ async function saveInlineField(id, field, value, onFail, extraPayload) {
     const obj = companies_cache.find(c => c.id === value);
     payload.companyId = value || ''; payload.companyName = obj?.name || '';
   } else if (field === 'contractorId') {
-    const obj = companies_cache.find(c => c.id === value);
+    const obj = contractors_cache.find(c => c.id === value);
     payload.contractorId = value || ''; payload.contractorName = obj?.name || '';
   } else if (field === 'driverId') {
     const obj = drivers_cache.find(d => d.id === value);
@@ -894,7 +1062,7 @@ function shipmentFormHTML(data) {
   const d = data || {};
   const companyOptions    = companies_cache.map(c  => `<option value="${c.id}"  ${d.companyId    === c.id  ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
   const driverOptions     = drivers_cache.map(dr   => `<option value="${dr.id}" ${d.driverId     === dr.id ? 'selected' : ''}>${esc(dr.name)}</option>`).join('');
-  const contractorOptions = companies_cache.map(c  => `<option value="${c.id}"  ${d.contractorId === c.id  ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
+  const contractorOptions = contractors_cache.map(c  => `<option value="${c.id}"  ${d.contractorId === c.id  ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
 
   /* Build status options from STATUS_CONFIG */
   const statusOptions = ALL_STATUSES.map(s =>
@@ -924,7 +1092,7 @@ function shipmentFormHTML(data) {
     </div>
     <div class="form-group">
       <label class="form-label">${t('phone')}</label>
-      <input type="tel" id="f-phone" class="form-input" value="${esc(d.customerPhone || '')}" placeholder="+961...">
+      ${phoneFieldHTML('f-phone', d.customerPhone, '')}
     </div>
   </div>
   <div class="form-group">
@@ -938,13 +1106,13 @@ function shipmentFormHTML(data) {
     </div>
     <div class="form-group">
       <label class="form-label">${t('contractor')}</label>
-      <select id="f-contractor" class="form-select"><option value="">${t('noneOption')}</option>${contractorOptions}</select>
+      <select id="f-contractor" class="form-select" onchange="if(this.value){document.getElementById('f-driver').value='';}"><option value="">${t('noneOption')}</option>${contractorOptions}</select>
     </div>
   </div>
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('driver')}</label>
-      <select id="f-driver" class="form-select"><option value="">${t('noneOption')}</option>${driverOptions}</select>
+      <select id="f-driver" class="form-select" onchange="if(this.value){document.getElementById('f-contractor').value='';}"><option value="">${t('noneOption')}</option>${driverOptions}</select>
     </div>
     <div class="form-group">
       <label class="form-label">${t('status')}</label>
@@ -1036,10 +1204,16 @@ async function saveShipment() {
 
   const companyObj    = companies_cache.find(c  => c.id  === companyId);
   const driverObj     = drivers_cache.find(d   => d.id   === driverId);
-  const contractorObj = companies_cache.find(c  => c.id  === contractorId);
+  const contractorObj = contractors_cache.find(c  => c.id  === contractorId);
 
   const shipNum = parseInt(document.getElementById('f-shipnum')?.value) || 0;
   if (!shipNum) { toast(t('shipNumRequired'), 'error'); return; }
+
+  const statusVal = document.getElementById('f-status')?.value || 'Pending';
+  if (statusVal !== 'Pending' && !driverId && !contractorId) {
+    toast(t('assignDriverOrContractorFirst'), 'error');
+    return;
+  }
 
   if (!editingId && await shipNumberExistsForCompany(shipNum, companyId)) {
     toast(t('duplicateShipNumber'), 'error');
@@ -1051,7 +1225,7 @@ async function saveShipment() {
     shipNumber:            shipNum,
     date:                  document.getElementById('f-date')?.value          || today(),
     customerName:          document.getElementById('f-customer')?.value?.trim()  || '',
-    customerPhone:         document.getElementById('f-phone')?.value?.trim()     || '',
+    customerPhone:         getPhoneFieldValue('f-phone'),
     customerAddress:       document.getElementById('f-address')?.value?.trim()   || '',
     companyId:             companyId    || '',
     companyName:           companyObj?.name    || '',
@@ -1117,7 +1291,7 @@ async function viewShipment(id) {
     <div class="detail-field"><div class="detail-label">${t('date')}</div><div class="detail-value">${fmtDate(s.date || s.createdAt)}</div></div>
     <div class="detail-field"><div class="detail-label">${t('company')}</div><div class="detail-value">${esc(s.companyName || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('customer')}</div><div class="detail-value">${esc(s.customerName || '—')}</div></div>
-    <div class="detail-field"><div class="detail-label">${t('phone')}</div><div class="detail-value font-mono">${esc(s.customerPhone || '—')}</div></div>
+    <div class="detail-field"><div class="detail-label">${t('phone')}</div><div class="detail-value font-mono">${esc(formatPhoneWithFlag(s.customerPhone))}</div></div>
     <div class="detail-field" style="grid-column:1/-1;"><div class="detail-label">${t('address')}</div><div class="detail-value">${esc(s.customerAddress || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('driver')}</div><div class="detail-value">${esc(s.driverName || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('contractor')}</div><div class="detail-value">${esc(s.contractorName || '—')}</div></div>
@@ -1262,7 +1436,8 @@ async function renderArchive() {
     }
   } catch (e) { ships = getDemoShipments().map(s => ({ ...s, status: 'Delivered' })); }
 
-  const showProfit = can('canViewProfit');
+  const canSeeProfit = can('canViewProfit');
+  const showProfit   = canSeeProfit && isProfitVisible();
   const canManage   = can('canArchive');
   const canDelete   = can('canDeleteShipments');
   window._selectedArchIds = new Set(); // fresh row-selection state each time this page opens
@@ -1271,7 +1446,7 @@ async function renderArchive() {
   // ones present in the currently loaded archive rows.
   const companyNames    = companies_cache.map(c => c.name).filter(Boolean).sort();
   const driverNames     = drivers_cache.map(d => d.name).filter(Boolean).sort();
-  const contractorNames = companies_cache.map(c => c.name).filter(Boolean).sort();
+  const contractorNames = contractors_cache.map(c => c.name).filter(Boolean).sort();
 
   content.innerHTML = `
   ${pageHeader(t('archive'), [t('operations')])}
@@ -1340,22 +1515,23 @@ async function renderArchive() {
       </div>
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportArchivePDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
+      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
+    </div>
+    <div class="table-footer">
+      <span id="arch-summary" style="color:var(--text-2);font-family:var(--mono);"></span>
     </div>
     <div class="table-scroll">
       <table>
         <thead><tr>
           ${canManage ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="arch-select-all" onchange="toggleSelectAllArchived(this)"></th>` : ''}
-          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('company')}</th>
+          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
           <th>${t('driver')}</th><th>${t('contractor')}</th>
           <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
-          ${showProfit ? `<th>${t('profitCol')}</th>` : ''}
+          ${showProfit ? `<th>${t('profitCol')}</th><th>${t('driverProfitCol')}</th><th>${t('contractorProfitCol')}</th>` : ''}
           <th>${t('status')}</th><th>${t('date')}</th><th>${t('archivedDateCol')}</th><th>${t('actions')}</th>
         </tr></thead>
         <tbody id="arch-tbody"></tbody>
       </table>
-    </div>
-    <div class="table-footer">
-      <span id="arch-summary" style="color:var(--text-2);font-family:var(--mono);"></span>
     </div>
   </div>
   <div class="mobile-cards" id="arch-mobile"></div>`;
@@ -1431,7 +1607,7 @@ function filterArchive() {
 
   window._filteredArchShips = ships; // exact "searched rows" set for export/bulk actions
 
-  const showProfit = can('canViewProfit');
+  const showProfit = can('canViewProfit') && isProfitVisible();
   const canManage   = can('canArchive');
   const canDelete   = can('canDeleteShipments');
   let totalDol = 0, totalLeb = 0, totalProfit = 0;
@@ -1442,7 +1618,7 @@ function filterArchive() {
   if (countEl)   countEl.textContent   = `${ships.length} ${t('archivedShipments')}`;
   if (summaryEl) summaryEl.textContent = `$${formatNum(totalDol)} | L.L.${formatNum(totalLeb)}${showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : ''}`;
 
-  const colCount = (canManage ? 1 : 0) + (showProfit ? 11 : 10) + 1;
+  const colCount = (canManage ? 1 : 0) + (showProfit ? 14 : 11) + 1;
 
   const tbody  = document.getElementById('arch-tbody');
   const mobile = document.getElementById('arch-mobile');
@@ -1454,12 +1630,15 @@ function filterArchive() {
       ${canManage ? `<td style="text-align:center;"><input type="checkbox" class="arch-row-check" value="${s.id}" ${window._selectedArchIds.has(s.id) ? 'checked' : ''} onchange="toggleArchRowCheck('${s.id}', this.checked)"></td>` : ''}
       <td class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</td>
       <td>${esc(s.customerName || '—')}</td>
+      <td style="max-width:180px;white-space:normal;">${esc(s.customerAddress || '—')}</td>
       <td>${esc(s.companyName  || '—')}</td>
       <td>${esc(s.driverName   || '—')}</td>
       <td>${esc(s.contractorName || '—')}</td>
       <td class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
       <td class="font-mono">${formatNum(s.priceLeb || 0)}</td>
-      ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
+      ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>
+      <td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>
+      <td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
       <td>${statusBadge(s.status)}</td>
       <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.date)}</td>
       <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.archivedAt)}</td>
@@ -1665,6 +1844,23 @@ async function viewShipmentArchive(id) {
 // ===================================================
 //  DEBTS & PAYMENTS
 // ===================================================
+/** Canonical stored values for a payment's `type` field, mapped to their i18n label key.
+ *  Keeps the DB value itself language-independent (always "Payment"/"Advance"/etc.) while
+ *  both the Type <select> options and the table's badge display show the current language. */
+const PAYMENT_TYPE_CONFIG = {
+  Payment:    { key: 'paymentTypePayment'    },
+  Advance:    { key: 'paymentTypeAdvance'    },
+  Refund:     { key: 'paymentTypeRefund'     },
+  Adjustment: { key: 'paymentTypeAdjustment' },
+};
+
+/** Translated label for a payment's type — falls back to the raw stored value (then a
+ *  generic "Payment") for any legacy/unrecognized type, mirroring statusBadge()'s fallback. */
+function paymentTypeLabel(type) {
+  const cfg = PAYMENT_TYPE_CONFIG[type];
+  return cfg ? t(cfg.key) : (type || t('paymentTypePayment'));
+}
+
 async function renderDebts() {
   if (!can('canViewDebts')) { renderAccessDenied(); return; }
   const content = document.getElementById('page-content');
@@ -1689,13 +1885,13 @@ async function renderDebts() {
   </div>
   <div class="table-container">
     <div class="table-header">
-      <span class="card-title">Payment Records</span>
+      <span class="card-title">${esc(t('paymentRecordsTitle'))}</span>
     </div>
     <div class="table-scroll">
       <table>
         <thead><tr>
-          <th>${t('date')}</th><th>${t('entity')}</th><th>Type</th>
-          <th>Amount ($)</th><th>Direction</th><th>${t('paymentNote')}</th>
+          <th>${t('date')}</th><th>${t('entity')}</th><th>${t('typeCol')}</th>
+          <th>${t('amountUSDCol')}</th><th>${t('directionCol')}</th><th>${t('paymentNote')}</th>
           ${can('canDeleteShipments') ? '<th></th>' : ''}
         </tr></thead>
         <tbody>
@@ -1703,12 +1899,12 @@ async function renderDebts() {
           <tr>
             <td style="color:var(--text-3);font-size:12px;">${fmtDate(f.date)}</td>
             <td><strong>${esc(f.entityName || '—')}</strong></td>
-            <td><span class="badge badge-gray">${esc(f.type || 'Payment')}</span></td>
+            <td><span class="badge badge-gray">${esc(paymentTypeLabel(f.type))}</span></td>
             <td class="font-mono" style="color:${f.direction > 0 ? 'var(--green)' : 'var(--red)'};">$${formatNum(f.amount || 0)}</td>
             <td>${f.direction > 0 ? `<span class="badge badge-green">${t('dirIn')}</span>` : `<span class="badge badge-red">${t('dirOut')}</span>`}</td>
             <td style="color:var(--text-3);font-size:12px;">${esc(f.notes || '')}</td>
             ${can('canDeleteShipments') ? `<td><button class="btn btn-danger btn-sm btn-icon" onclick="deletePayment('${f.id}')">🗑</button></td>` : ''}
-          </tr>`).join('') || `<tr><td colspan="7" class="table-empty"><div class="empty-icon">💰</div><p>No payments recorded</p></td></tr>`}
+          </tr>`).join('') || `<tr><td colspan="7" class="table-empty"><div class="empty-icon">💰</div><p>${esc(t('noPaymentsRecorded'))}</p></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -1716,33 +1912,38 @@ async function renderDebts() {
 }
 
 function openPaymentModal() {
-  const comps = companies_cache.map(c => `<option value="${c.id}">[Company] ${esc(c.name)}</option>`).join('');
-  const drvs  = drivers_cache.map(d  => `<option value="${d.id}">[Driver] ${esc(d.name)}</option>`).join('');
+  const comps = companies_cache.map(c => `<option value="${c.id}">[${esc(t('companiesEntityPrefix'))}] ${esc(c.name)}</option>`).join('');
+  const drvs  = drivers_cache.map(d  => `<option value="${d.id}">[${esc(t('driversEntityPrefix'))}] ${esc(d.name)}</option>`).join('');
+  const ctrs  = contractors_cache.map(c => `<option value="${c.id}">[${esc(t('contractorsEntityPrefix'))}] ${esc(c.name)}</option>`).join('');
+  const typeOptions = Object.keys(PAYMENT_TYPE_CONFIG).map(k => `<option value="${k}">${esc(t(PAYMENT_TYPE_CONFIG[k].key))}</option>`).join('');
+  document.getElementById('modal-payment-title').textContent      = t('recordPaymentTitle');
+  document.getElementById('modal-payment-cancel-btn').textContent = t('cancel');
+  document.getElementById('modal-payment-save-btn').textContent   = t('recordPaymentTitle');
   document.getElementById('modal-payment-body').innerHTML = `
   <div class="form-group">
     <label class="form-label">${t('entity')}</label>
     <select id="p-entity" class="form-select" onchange="setEntityName()">
-      <option value="">— Select —</option>${comps}${drvs}
+      <option value="">${esc(t('selectPlaceholderDash'))}</option>${comps}${drvs}${ctrs}
     </select>
   </div>
   <input type="hidden" id="p-entity-name">
   <div class="form-row">
-    <div class="form-group"><label class="form-label">Amount ($)</label><input type="number" step="0.01" id="p-amount" class="form-input" placeholder="0.00"></div>
-    <div class="form-group"><label class="form-label">Direction</label>
+    <div class="form-group"><label class="form-label">${t('amountUSDCol')}</label><input type="number" step="0.01" id="p-amount" class="form-input" placeholder="0.00"></div>
+    <div class="form-group"><label class="form-label">${t('directionCol')}</label>
       <select id="p-direction" class="form-select">
-        <option value="1">↑ Incoming (received)</option>
-        <option value="-1">↓ Outgoing (paid)</option>
+        <option value="1">${esc(t('directionIncoming'))}</option>
+        <option value="-1">${esc(t('directionOutgoing'))}</option>
       </select>
     </div>
   </div>
-  <div class="form-group"><label class="form-label">Type</label>
+  <div class="form-group"><label class="form-label">${t('typeCol')}</label>
     <select id="p-type" class="form-select">
-      <option>Payment</option><option>Advance</option><option>Refund</option><option>Adjustment</option>
+      ${typeOptions}
     </select>
   </div>
   <div class="form-row">
     <div class="form-group"><label class="form-label">${t('date')}</label><input type="date" id="p-date" class="form-input" value="${today()}"></div>
-    <div class="form-group"><label class="form-label">${t('paymentNote')}</label><input type="text" id="p-notes" class="form-input" placeholder="Optional note"></div>
+    <div class="form-group"><label class="form-label">${t('paymentNote')}</label><input type="text" id="p-notes" class="form-input" placeholder="${esc(t('optionalNotePlaceholder'))}"></div>
   </div>`;
   openModal('modal-payment');
 }
@@ -1796,7 +1997,7 @@ async function renderGeneral() {
     if (db) { const snap = await db.collection('sonick_shipments').get(); ships = snap.docs.map(d => ({ id: d.id, ...d.data() })); }
   } catch (e) { ships = getDemoShipments(); }
 
-  const byCompany = {}, byDriver = {}, byStatus = {};
+  const byCompany = {}, byDriver = {}, byContractor = {};
   ships.forEach(s => {
     const ck = s.companyName || 'Unknown';
     if (!byCompany[ck]) byCompany[ck] = { count: 0, dol: 0, leb: 0, profit: 0, delivered: 0 };
@@ -1810,8 +2011,9 @@ async function renderGeneral() {
     if (!byDriver[dk]) byDriver[dk] = { count: 0, dol: 0, cost: 0 };
     byDriver[dk].count++; byDriver[dk].dol += s.priceDollar || 0; byDriver[dk].cost += s.driverDeliveryCost || 0;
 
-    const sk = s.status || 'Unknown';
-    byStatus[sk] = (byStatus[sk] || 0) + 1;
+    const ctk = s.contractorName || '—';
+    if (!byContractor[ctk]) byContractor[ctk] = { count: 0, dol: 0, cost: 0 };
+    byContractor[ctk].count++; byContractor[ctk].dol += s.priceDollar || 0; byContractor[ctk].cost += s.contractorDeliveryCost || 0;
   });
 
   const showProfit = can('canViewProfit');
@@ -1831,39 +2033,36 @@ async function renderGeneral() {
     <div class="stat-card amber"><div class="stat-icon amber">${ICONS.landmark}</div><div class="stat-label">Total (L.L.)</div><div class="stat-value mono">${formatNum(Math.round(totalLeb / 1000000))}M</div></div>
     ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('profit')}</div><div class="stat-value mono">$${formatNum(totalProfit)}</div></div>` : ''}
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;" class="report-grid">
-    <div class="table-container">
-      <div class="card-header"><span class="card-title">${t('byStatus')}</span></div>
-      <table><thead><tr><th>${t('status')}</th><th>${t('count')}</th><th>%</th></tr></thead><tbody>
-        ${Object.entries(byStatus).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`
-        <tr><td>${statusBadge(k)}</td><td class="font-mono">${v}</td><td class="font-mono" style="color:var(--text-3);">${ships.length?Math.round(v/ships.length*100):0}%</td></tr>`).join('')
-        || '<tr><td colspan="3" class="table-empty"><p>No data</p></td></tr>'}
-      </tbody></table>
-    </div>
+  <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;" class="report-grid">
     <div class="table-container">
       <div class="card-header"><span class="card-title">${t('byDriver')}</span></div>
-      <table><thead><tr><th>${t('driver')}</th><th>${t('count')}</th><th>${t('revenueCol')}</th></tr></thead><tbody>
+      <div class="table-scroll">
+      <table><thead><tr><th>${t('driver')}</th><th>${t('count')}</th><th>${t('incomeCol')}</th>${showProfit?`<th>${t('profitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byDriver).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
-        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td></tr>`).join('')
-        || '<tr><td colspan="3" class="table-empty"><p>No data</p></td></tr>'}
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
       </tbody></table>
+      </div>
     </div>
-  </div>
-  <div class="table-container">
-    <div class="card-header"><span class="card-title">${t('byCompany')}</span></div>
-    <div class="table-scroll">
-      <table>
-        <thead><tr><th>${t('company')}</th><th>Shipments</th><th>${t('delivered')}</th><th>${t('revenueCol')}</th><th>${t('revenueLL')}</th>${showProfit?'<th>Profit ($)</th>':''}</tr></thead>
-        <tbody>
-          ${Object.entries(byCompany).sort((a,b)=>b[1].dol-a[1].dol).map(([k,v])=>`
-          <tr>
-            <td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td>
-            <td><span class="badge badge-green">${v.delivered}</span></td>
-            <td class="font-mono">$${formatNum(v.dol)}</td><td class="font-mono">${formatNum(v.leb)}</td>
-            ${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.profit)}</td>`:''}
-          </tr>`).join('') || `<tr><td colspan="6" class="table-empty"><p>No data</p></td></tr>`}
-        </tbody>
-      </table>
+    <div class="table-container">
+      <div class="card-header"><span class="card-title">${t('byContractor')}</span></div>
+      <div class="table-scroll">
+      <table><thead><tr><th>${t('contractor')}</th><th>${t('count')}</th><th>${t('incomeCol')}</th>${showProfit?`<th>${t('profitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
+        ${Object.entries(byContractor).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
+      </tbody></table>
+      </div>
+    </div>
+    <div class="table-container">
+      <div class="card-header"><span class="card-title">${t('byCompany')}</span></div>
+      <div class="table-scroll">
+      <table><thead><tr><th>${t('company')}</th><th>${t('count')}</th><th>${t('outcomeCol')}</th>${showProfit?`<th>${t('ourProfitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
+        ${Object.entries(byCompany).sort((a,b)=>b[1].dol-a[1].dol).map(([k,v])=>`
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.profit)}</td><td class="font-mono">$${formatNum(v.dol - v.profit)}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
+      </tbody></table>
+      </div>
     </div>
   </div>
   <style>@media(max-width:768px){.report-grid{grid-template-columns:1fr;}}</style>`;
@@ -1910,7 +2109,7 @@ function filterCompanies() {
   if (tbody) tbody.innerHTML = list.map(c => `
   <tr>
     <td><strong>${esc(c.name||'—')}</strong></td>
-    <td class="font-mono">${esc(c.phones||'—')}</td>
+    <td class="font-mono">${esc(formatPhoneWithFlag(c.phones))}</td>
     <td class="font-mono">$${formatNum(c.deliveryCost||0)}</td>
     <td><div style="display:flex;gap:4px;">
       <button class="btn btn-ghost  btn-sm btn-icon" onclick="editCompany('${c.id}')">✏️</button>
@@ -1922,7 +2121,7 @@ function filterCompanies() {
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🏢 ${esc(c.name||'—')}</span></div>
     <div class="mobile-card-body">
-      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(c.phones||'—')}</div></div>
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(c.phones))}</div></div>
       <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(c.deliveryCost||0)}</div></div>
     </div>
     <div class="mobile-card-footer">
@@ -1936,7 +2135,7 @@ function companyFormHTML(d) {
   d = d || {};
   return `
   <div class="form-group"><label class="form-label">${t('companyName')} <span style="color:var(--brand)">*</span></label><input type="text" id="cf-name" class="form-input" value="${esc(d.name||'')}" placeholder="Company name"></div>
-  <div class="form-group"><label class="form-label">${t('phone')}</label><input type="tel" id="cf-phones" class="form-input" value="${esc(d.phones||'')}" placeholder="+961..."></div>
+  <div class="form-group"><label class="form-label">${t('phone')}</label>${phoneFieldHTML('cf-phones', d.phones, '')}</div>
   <div class="form-group"><label class="form-label">${t('deliveryCostCol')}</label><input type="number" step="0.01" id="cf-delcost" class="form-input" value="${d.deliveryCost||''}" placeholder="0.00"></div>`;
 }
 
@@ -1955,7 +2154,7 @@ async function editCompany(id) {
 async function saveCompany() {
   const name = document.getElementById('cf-name')?.value?.trim();
   if (!name) { toast('Name is required', 'error'); return; }
-  const payload = { name, phones: document.getElementById('cf-phones')?.value || '', deliveryCost: parseFloat(document.getElementById('cf-delcost')?.value) || 0 };
+  const payload = { name, phones: getPhoneFieldValue('cf-phones'), deliveryCost: parseFloat(document.getElementById('cf-delcost')?.value) || 0 };
   try {
     if (editingId) { if (db) await db.collection('sonick_companies').doc(editingId).update(payload); toast(t('companyUpdated'), 'success'); }
     else { if (db) await db.collection('sonick_companies').add(payload); else companies_cache.push({ id: 'c' + Date.now(), ...payload }); toast(t('companyAdded'), 'success'); }
@@ -1966,6 +2165,107 @@ async function saveCompany() {
 async function deleteCompany(id) {
   confirmAction(t('deleteCompanyConfirm'), '', async () => {
     try { if (db) await db.collection('sonick_companies').doc(id).delete(); await loadCaches(); toast(t('deleted'), 'success'); renderCompanies(); }
+    catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+// ===================================================
+//  CONTRACTORS
+// ===================================================
+async function renderContractors() {
+  if (!can('canManageContractors')) { renderAccessDenied(); return; }
+  const content = document.getElementById('page-content');
+  let contractors = [];
+  try {
+    if (db) { const snap = await db.collection('sonick_contractors').orderBy('name').get(); contractors = snap.docs.map(d=>({id:d.id,...d.data()})); contractors_cache = contractors; }
+    else contractors = contractors_cache;
+  } catch (e) { contractors = contractors_cache; }
+
+  content.innerHTML = `
+  ${pageHeader(t('contractors'), [t('management')])}
+  <div class="table-container">
+    <div class="table-header">
+      <div class="table-search"><span class="search-icon">🔍</span><input type="text" placeholder="${t('searchContractors')}" id="contr-search" oninput="filterContractors()" style="width:200px;"></div>
+      <button class="btn btn-primary btn-sm" onclick="openContractorModal()">+ ${t('contractors')}</button>
+    </div>
+    <div class="table-scroll desktop-table">
+      <table>
+        <thead><tr><th>${t('contractorName')}</th><th>${t('phone')}</th><th>${t('deliveryCostCol')}</th><th>${t('actions')}</th></tr></thead>
+        <tbody id="contr-tbody"></tbody>
+      </table>
+    </div>
+    <div class="mobile-cards" id="contr-mobile"></div>
+  </div>`;
+
+  window._contractors = contractors;
+  filterContractors();
+}
+
+function filterContractors() {
+  const search = (document.getElementById('contr-search')?.value || '').toLowerCase();
+  const list   = (window._contractors || contractors_cache).filter(c => !search || (c.name||'').toLowerCase().includes(search) || (c.phones||'').includes(search));
+  const tbody  = document.getElementById('contr-tbody');
+  const mobile = document.getElementById('contr-mobile');
+
+  if (tbody) tbody.innerHTML = list.map(c => `
+  <tr>
+    <td><strong>${esc(c.name||'—')}</strong></td>
+    <td class="font-mono">${esc(formatPhoneWithFlag(c.phones))}</td>
+    <td class="font-mono">$${formatNum(c.deliveryCost||0)}</td>
+    <td><div style="display:flex;gap:4px;">
+      <button class="btn btn-ghost  btn-sm btn-icon" onclick="editContractor('${c.id}')">✏️</button>
+      <button class="btn btn-danger btn-sm btn-icon" onclick="deleteContractor('${c.id}')">🗑</button>
+    </div></td>
+  </tr>`).join('') || `<tr><td colspan="4" class="table-empty"><div class="empty-icon">🤝</div><p>No contractors yet</p></td></tr>`;
+
+  if (mobile) mobile.innerHTML = list.map(c => `
+  <div class="mobile-card">
+    <div class="mobile-card-header"><span class="mobile-card-num">🤝 ${esc(c.name||'—')}</span></div>
+    <div class="mobile-card-body">
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(c.phones))}</div></div>
+      <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(c.deliveryCost||0)}</div></div>
+    </div>
+    <div class="mobile-card-footer">
+      <button class="btn btn-ghost  btn-sm" onclick="editContractor('${c.id}')">✏️ Edit</button>
+      <button class="btn btn-danger btn-sm" onclick="deleteContractor('${c.id}')">🗑 Delete</button>
+    </div>
+  </div>`).join('');
+}
+
+function contractorFormHTML(d) {
+  d = d || {};
+  return `
+  <div class="form-group"><label class="form-label">${t('contractorName')} <span style="color:var(--brand)">*</span></label><input type="text" id="ctf-name" class="form-input" value="${esc(d.name||'')}" placeholder="Contractor name"></div>
+  <div class="form-group"><label class="form-label">${t('phone')}</label>${phoneFieldHTML('ctf-phones', d.phones, '')}</div>
+  <div class="form-group"><label class="form-label">${t('deliveryCostCol')}</label><input type="number" step="0.01" id="ctf-delcost" class="form-input" value="${d.deliveryCost||''}" placeholder="0.00"></div>`;
+}
+
+function openContractorModal(d) {
+  editingId = d?.id || null;
+  document.getElementById('modal-contractor-title').textContent = d ? 'Edit Contractor' : t('newContractor');
+  document.getElementById('modal-contractor-body').innerHTML    = contractorFormHTML(d);
+  openModal('modal-contractor');
+}
+
+async function editContractor(id) {
+  const c = (window._contractors || contractors_cache).find(x => x.id === id);
+  if (c) openContractorModal(c);
+}
+
+async function saveContractor() {
+  const name = document.getElementById('ctf-name')?.value?.trim();
+  if (!name) { toast('Name is required', 'error'); return; }
+  const payload = { name, phones: getPhoneFieldValue('ctf-phones'), deliveryCost: parseFloat(document.getElementById('ctf-delcost')?.value) || 0 };
+  try {
+    if (editingId) { if (db) await db.collection('sonick_contractors').doc(editingId).update(payload); toast(t('contractorUpdated'), 'success'); }
+    else { if (db) await db.collection('sonick_contractors').add(payload); else contractors_cache.push({ id: 'ct' + Date.now(), ...payload }); toast(t('contractorAdded'), 'success'); }
+    closeModal('modal-contractor'); await loadCaches(); renderContractors();
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+}
+
+async function deleteContractor(id) {
+  confirmAction(t('deleteContractorConfirm'), '', async () => {
+    try { if (db) await db.collection('sonick_contractors').doc(id).delete(); await loadCaches(); toast(t('deleted'), 'success'); renderContractors(); }
     catch (e) { toast(t('error') + e.message, 'error'); }
   });
 }
@@ -2012,7 +2312,7 @@ function filterDrivers() {
   if (tbody) tbody.innerHTML = list.map(d => `
   <tr>
     <td><strong>${esc(d.name||'—')}</strong></td>
-    <td class="font-mono">${esc(d.phones||'—')}</td>
+    <td class="font-mono">${esc(formatPhoneWithFlag(d.phones))}</td>
     <td class="font-mono">$${formatNum(d.deliveryCost||0)}</td>
     <td>${d.active!==false ? `<span class="badge badge-green">${t('activeLabel')}</span>` : `<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</td>
     <td>${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</td>
@@ -2026,7 +2326,7 @@ function filterDrivers() {
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🚗 ${esc(d.name||'—')}</span>${d.active!==false?`<span class="badge badge-green">${t('activeLabel')}</span>`:`<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</div>
     <div class="mobile-card-body">
-      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(d.phones||'—')}</div></div>
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(d.phones))}</div></div>
       <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(d.deliveryCost||0)}</div></div>
       <div><div class="mobile-card-label">${t('portalColumnLabel')}</div><div class="mobile-card-value">${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</div></div>
     </div>
@@ -2075,7 +2375,7 @@ function driverFormHTML(d) {
 
   return `
   <div class="form-group"><label class="form-label">${t('driverName')} <span style="color:var(--brand)">*</span></label><input type="text" id="df-name" class="form-input" value="${esc(d.name||'')}" placeholder="Full name"></div>
-  <div class="form-group"><label class="form-label">${t('phone')}</label><input type="tel" id="df-phones" class="form-input" value="${esc(d.phones||'')}" placeholder="+961..."></div>
+  <div class="form-group"><label class="form-label">${t('phone')}</label>${phoneFieldHTML('df-phones', d.phones, '')}</div>
   <div class="form-group"><label class="form-label">${t('deliveryCostCol')}</label><input type="number" step="0.01" id="df-delcost" class="form-input" value="${d.deliveryCost||''}" placeholder="0.00"></div>
   <div class="form-group"><label class="form-label">${t('activeStatus')}</label>
     <select id="df-active" class="form-select">
@@ -2101,7 +2401,7 @@ async function editDriver(id) {
 async function saveDriver() {
   const name    = document.getElementById('df-name')?.value?.trim();
   if (!name) { toast('Name is required', 'error'); return; }
-  const phones  = document.getElementById('df-phones')?.value || '';
+  const phones  = getPhoneFieldValue('df-phones');
   const deliveryCost = parseFloat(document.getElementById('df-delcost')?.value) || 0;
   const active  = document.getElementById('df-active')?.value === 'true';
   const username = document.getElementById('df-username')?.value?.trim() || '';
@@ -2328,6 +2628,7 @@ async function toggleUserActive(id, currentlyActive) {
 //  SETTINGS
 // ===================================================
 let _exportColsDraft = null; // working copy of the export-columns list while Settings is open; rebuilt fresh each time renderSettings() runs
+let _exportColsSectionCollapsed = true; // Export Columns section starts shrunk; persists across renderSettings() re-renders (module-level, not reset per render)
 
 async function renderSettings() {
   const content = document.getElementById('page-content');
@@ -2335,61 +2636,72 @@ async function renderSettings() {
   try { if (db) { const doc = await db.collection('sonick_settings').doc('general').get(); if (doc.exists) settings = doc.data(); } } catch (e) {}
   if (Array.isArray(settings.exportColumns)) exportColumnsConfig = settings.exportColumns; // keep the export functions' cache in sync with what Settings just fetched
   _exportColsDraft = resolveExportColumnsFull();
+  await refreshExportReportsCache(); // fetch fresh saved reports, same pattern as renderCompanies()
 
   content.innerHTML = `
   ${pageHeader(t('settings'), [t('system')])}
   <div class="settings-section">
-    <div class="settings-section-title">⚙️ Financial Settings</div>
+    <div class="settings-section-title">⚙️ ${esc(t('financialSettingsTitle'))}</div>
     <div class="settings-row">
-      <div><div class="settings-row-label">Dollar Exchange Rate (L.L.)</div><div class="settings-row-desc">Used for automatic conversion in shipments</div></div>
+      <div><div class="settings-row-label">${esc(t('dollarRateLabel'))}</div><div class="settings-row-desc">${esc(t('dollarRateDesc'))}</div></div>
       <div style="display:flex;align-items:center;gap:8px;">
         <input type="number" id="s-dollrate" class="form-input" value="${settings.dollarRate||''}" style="width:160px;" placeholder="e.g. 89500">
-        ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveDollarRate()">Save</button>` : ''}
+        ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveDollarRate()">${esc(t('saveBtn'))}</button>` : ''}
       </div>
     </div>
   </div>
   <div class="settings-section">
-    <div class="settings-section-title">📊 Export Columns</div>
-    <div class="settings-row">
-      <div class="settings-row-desc" style="max-width:640px;">Choose which shipment fields are included — and in what order — when exporting to Excel or PDF, from both the Shipments and Archive pages.</div>
+    <div class="settings-section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleExportColumnsSection()">
+      <span>📊 ${esc(t('exportColumnsTitle'))}</span>
+      <span id="export-columns-toggle-icon" style="display:inline-block;transition:transform var(--transition);transform:rotate(${_exportColsSectionCollapsed ? '0' : '180'}deg);">▾</span>
     </div>
-    <div id="export-columns-list">${renderExportColumnsRows()}</div>
-    <div class="settings-row">
-      <div></div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn btn-secondary btn-sm" onclick="resetExportColumnsDefault()">Reset to Default</button>
-        ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveExportColumns()">Save</button>` : ''}
+    <div id="export-columns-section-body" style="display:${_exportColsSectionCollapsed ? 'none' : 'block'};">
+      <div class="settings-row">
+        <div><div class="settings-row-label">💾 ${esc(t('savedReportsTitle'))}</div><div class="settings-row-desc">${esc(t('savedReportsDesc'))}</div></div>
+        ${can('canManageUsers') ? `<button class="btn btn-secondary btn-sm" onclick="openExportReportModal()">+ ${esc(t('newReportBtn'))}</button>` : ''}
+      </div>
+      <div id="export-reports-list">${renderExportReportsList()}</div>
+      <div class="settings-row" style="border-top:1px solid var(--border-2);margin-top:10px;padding-top:14px;">
+        <div class="settings-row-desc" style="max-width:640px;">${esc(t('exportColumnsDesc'))}</div>
+      </div>
+      <div id="export-columns-list">${renderExportColumnsRows()}</div>
+      <div class="settings-row">
+        <div></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary btn-sm" onclick="resetExportColumnsDefault()">${esc(t('resetToDefaultBtn'))}</button>
+          ${can('canManageUsers') ? `<button class="btn btn-primary btn-sm" onclick="saveExportColumns()">${esc(t('saveBtn'))}</button>` : ''}
+        </div>
       </div>
     </div>
   </div>
   <div class="settings-section">
-    <div class="settings-section-title">👤 My Profile</div>
+    <div class="settings-section-title">👤 ${esc(t('myProfileTitle'))}</div>
     <div class="settings-row">
-      <div><div class="settings-row-label">Display Name</div><div class="settings-row-desc">Shown across the system</div></div>
+      <div><div class="settings-row-label">${esc(t('displayNameLabel'))}</div><div class="settings-row-desc">${esc(t('displayNameDesc'))}</div></div>
       <input type="text" id="s-displayname" class="form-input" value="${esc(currentUserData?.displayName||'')}" style="width:200px;">
     </div>
     <div class="settings-row">
-      <div><div class="settings-row-label">Email</div><div class="settings-row-desc">Your login email</div></div>
+      <div><div class="settings-row-label">${esc(t('emailLabel'))}</div><div class="settings-row-desc">${esc(t('yourLoginEmailDesc'))}</div></div>
       <span style="color:var(--text-2);font-size:13px;">${esc(currentUser?.email||'—')}</span>
     </div>
     <div class="settings-row">
-      <div><div class="settings-row-label">Role</div><div class="settings-row-desc">Determines your permissions</div></div>
+      <div><div class="settings-row-label">${esc(t('roleLabel'))}</div><div class="settings-row-desc">${esc(t('rolePermissionsDesc'))}</div></div>
       <span class="badge badge-brand">${(ROLES[currentUserData?.role]||{label:'?'}).label}</span>
     </div>
-    <div class="settings-row"><div></div><button class="btn btn-primary btn-sm" onclick="saveProfile()">Save Profile</button></div>
+    <div class="settings-row"><div></div><button class="btn btn-primary btn-sm" onclick="saveProfile()">${esc(t('saveProfileBtn'))}</button></div>
   </div>
   <div class="settings-section">
-    <div class="settings-section-title">🔐 Security</div>
+    <div class="settings-section-title">🔐 ${esc(t('securityTitle'))}</div>
     <div class="settings-row">
-      <div><div class="settings-row-label">Change Password</div><div class="settings-row-desc">Send a reset email to your address</div></div>
-      <button class="btn btn-secondary btn-sm" onclick="sendPasswordReset()">Send Reset Email</button>
+      <div><div class="settings-row-label">${esc(t('changePasswordLabel'))}</div><div class="settings-row-desc">${esc(t('changePasswordDesc'))}</div></div>
+      <button class="btn btn-secondary btn-sm" onclick="sendPasswordReset()">${esc(t('sendResetEmailBtn'))}</button>
     </div>
   </div>
   <div class="settings-section">
-    <div class="settings-section-title">ℹ️ System Info</div>
-    <div class="settings-row"><div class="settings-row-label">Version</div><span style="color:var(--text-3);font-family:var(--mono);">2.0.0-web</span></div>
-    <div class="settings-row"><div class="settings-row-label">Firebase Project</div><span style="color:var(--text-3);font-family:var(--mono);">${firebaseConfig.projectId||'not configured'}</span></div>
-    <div class="settings-row"><div class="settings-row-label">User ID</div><span style="color:var(--text-3);font-family:var(--mono);font-size:11px;">${currentUser?.uid||'—'}</span></div>
+    <div class="settings-section-title">ℹ️ ${esc(t('systemInfoTitle'))}</div>
+    <div class="settings-row"><div class="settings-row-label">${esc(t('versionLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);">2.0.0-web</span></div>
+    <div class="settings-row"><div class="settings-row-label">${esc(t('firebaseProjectLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);">${firebaseConfig.projectId||esc(t('notConfiguredText'))}</span></div>
+    <div class="settings-row"><div class="settings-row-label">${esc(t('userIdLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);font-size:11px;">${currentUser?.uid||'—'}</span></div>
   </div>`;
 }
 
@@ -2457,6 +2769,130 @@ async function saveExportColumns() {
   } catch (e) { toast(t('error') + e.message, 'error'); }
 }
 
+/** Expand/shrink the whole Export Columns settings card (default columns + saved reports).
+ *  Starts shrunk (_exportColsSectionCollapsed = true); state persists across renderSettings()
+ *  re-renders since it lives in a module-level variable, not local render state. */
+function toggleExportColumnsSection() {
+  _exportColsSectionCollapsed = !_exportColsSectionCollapsed;
+  const body = document.getElementById('export-columns-section-body');
+  const icon = document.getElementById('export-columns-toggle-icon');
+  if (body) body.style.display = _exportColsSectionCollapsed ? 'none' : 'block';
+  if (icon) icon.style.transform = `rotate(${_exportColsSectionCollapsed ? '0' : '180'}deg)`;
+}
+
+// ===================================================
+//  SAVED EXPORT REPORTS (named column presets)
+// ===================================================
+let _reportColsDraft        = null; // working copy of a report's column list while its modal is open
+let editingExportReportId   = null;
+
+function renderExportReportsList() {
+  const reports = exportReports_cache || [];
+  if (!reports.length) return `<div class="settings-row"><div class="settings-row-desc">${esc(t('noSavedReports'))}</div></div>`;
+  return reports.map(r => `
+    <div class="settings-row">
+      <div><div class="settings-row-label">${esc(r.name)}</div><div class="settings-row-desc">${(r.columns||[]).filter(c => c.visible !== false).length} ${esc(t('columnsEnabledLabel'))}</div></div>
+      ${can('canManageUsers') ? `
+      <div style="display:flex;gap:4px;">
+        <button class="btn btn-ghost  btn-sm btn-icon" title="Edit"   onclick="editExportReport('${r.id}')">✏️</button>
+        <button class="btn btn-danger btn-sm btn-icon" title="Delete" onclick="deleteExportReport('${r.id}')">🗑</button>
+      </div>` : ''}
+    </div>`).join('');
+}
+
+/** Open the New/Edit Report modal. Pass an existing saved report to edit it, or nothing to
+ *  start a fresh one seeded from the full default column set (all visible). */
+function openExportReportModal(report) {
+  editingExportReportId = report?.id || null;
+  _reportColsDraft = report ? resolveColumnsFromConfig(report.columns) : EXPORT_COLUMN_DEFS.map(c => ({ ...c, visible: true }));
+  document.getElementById('modal-export-report-title').textContent = report ? t('editReportTitle') : t('newReportTitle');
+  document.getElementById('erf-name-label').textContent = t('reportNameLabel');
+  const nameInput = document.getElementById('erf-name');
+  nameInput.value = report?.name || '';
+  nameInput.placeholder = t('reportNamePlaceholder');
+  _refreshReportColumnsList();
+  openModal('modal-export-report');
+}
+
+function editExportReport(id) {
+  const r = (exportReports_cache || []).find(x => x.id === id);
+  if (r) openExportReportModal(r);
+}
+
+function renderReportColumnsRows() {
+  return _reportColsDraft.map((c, i) => `
+    <div class="settings-row" style="padding:6px 4px;">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin:0;">
+        <input type="checkbox" ${c.visible ? 'checked' : ''} onchange="toggleReportColumn('${c.key}')">
+        <span class="settings-row-label">${esc(c.label)}</span>
+      </label>
+      <div style="display:flex;gap:4px;">
+        <button class="btn btn-ghost btn-sm btn-icon" title="Move up"   ${i === 0 ? 'disabled' : ''} onclick="moveReportColumn('${c.key}', -1)">▲</button>
+        <button class="btn btn-ghost btn-sm btn-icon" title="Move down" ${i === _reportColsDraft.length - 1 ? 'disabled' : ''} onclick="moveReportColumn('${c.key}', 1)">▼</button>
+      </div>
+    </div>`).join('');
+}
+
+function _refreshReportColumnsList() {
+  const list = document.getElementById('export-report-columns-list');
+  if (list) list.innerHTML = renderReportColumnsRows();
+}
+
+function toggleReportColumn(key) {
+  const col = _reportColsDraft.find(c => c.key === key);
+  if (col) col.visible = !col.visible;
+  _refreshReportColumnsList();
+}
+
+function moveReportColumn(key, dir) {
+  const i = _reportColsDraft.findIndex(c => c.key === key);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= _reportColsDraft.length) return;
+  [_reportColsDraft[i], _reportColsDraft[j]] = [_reportColsDraft[j], _reportColsDraft[i]];
+  _refreshReportColumnsList();
+}
+
+async function saveExportReport() {
+  const name = document.getElementById('erf-name')?.value?.trim();
+  if (!name) { toast(t('reportNameRequired'), 'error'); return; }
+  const ts = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  const payload = { name, columns: _reportColsDraft.map(c => ({ key: c.key, visible: c.visible })), updatedAt: ts };
+  try {
+    if (editingExportReportId) {
+      if (db) await db.collection('sonick_export_reports').doc(editingExportReportId).update(payload);
+      toast(t('reportUpdated'), 'success');
+    } else {
+      if (db) await db.collection('sonick_export_reports').add({ ...payload, createdAt: ts });
+      toast(t('reportCreated'), 'success');
+    }
+    closeModal('modal-export-report');
+    await refreshExportReportsCache();
+    renderSettings();
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+}
+
+async function deleteExportReport(id) {
+  confirmAction(t('deleteReportConfirm'), '', async () => {
+    try {
+      if (db) await db.collection('sonick_export_reports').doc(id).delete();
+      await refreshExportReportsCache();
+      toast(t('deleted'), 'success');
+      renderSettings();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+/** Refetch saved export reports from Firestore into exportReports_cache — called after any
+ *  create/edit/delete so both Settings and the export-options picker stay in sync. */
+async function refreshExportReportsCache() {
+  try {
+    if (db) {
+      const snap = await db.collection('sonick_export_reports').orderBy('name').get();
+      exportReports_cache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    }
+  } catch (e) { console.warn('Export reports cache refresh failed:', e.message); }
+}
+
 async function saveProfile() {
   const name = document.getElementById('s-displayname')?.value?.trim();
   if (!name) { toast(t('nameRequired'), 'error'); return; }
@@ -2482,7 +2918,8 @@ async function sendPasswordReset() {
 // ===================================================
 const BACKUP_COLLECTIONS = [
   'sonick_shipments', 'sonick_archive', 'sonick_companies', 'sonick_drivers',
-  'sonick_billtypes', 'sonick_payments', 'sonick_users', 'sonick_settings'
+  'sonick_billtypes', 'sonick_payments', 'sonick_users', 'sonick_settings',
+  'sonick_export_reports'
 ];
 const BACKUP_LAST_KEY = 'sonick_last_backup_at';
 let _pendingRestoreFile = null;

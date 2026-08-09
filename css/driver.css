@@ -23,7 +23,7 @@
   gap: 10px;
 }
 .driver-header-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.driver-header-id img { width: 32px; height: 32px; object-fit: contain; flex-shrink: 0; }
+.driver-header-id img { width: 38px; height: 38px; object-fit: contain; flex-shrink: 0; }
 .driver-header-name { font-size: 0.929rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .driver-header-sub { font-size: 0.714rem; color: var(--text-3); }
 .driver-header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -97,4 +97,4 @@
 .driver-empty .empty-sub { font-size: 0.786rem; margin-top: 4px; }
 
 /* ===== LOGIN SCREEN TWEAK ===== */
-.driver-login-card .logo-mark-img-lg { width: 72px; height: 72px; }
+.driver-login-card .driver-login-logo-img { height: 130px; }

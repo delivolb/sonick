@@ -33,6 +33,7 @@ function setupUI() {
   const nd  = document.getElementById('nav-debts');
   const ng  = document.getElementById('nav-general');
   const nc  = document.getElementById('nav-companies');
+  const ncn = document.getElementById('nav-contractors');
   const ndr = document.getElementById('nav-drivers');
   const nu  = document.getElementById('nav-users');
   const nb  = document.getElementById('nav-backup');
@@ -42,13 +43,14 @@ function setupUI() {
 
   if (nd)  nd.style.display  = can('canViewDebts')       ? '' : 'none';
   if (ng)  ng.style.display  = can('canViewGeneral')     ? '' : 'none';
-  if (nc)  nc.style.display  = can('canManageCompanies') ? '' : 'none';
+  if (nc)  nc.style.display  = can('canManageCompanies')   ? '' : 'none';
+  if (ncn) ncn.style.display = can('canManageContractors') ? '' : 'none';
   if (ndr) ndr.style.display = can('canManageDrivers')   ? '' : 'none';
   if (nu)  nu.style.display  = can('canManageUsers')     ? '' : 'none';
   if (nb)  nb.style.display  = can('canManageBackup')    ? '' : 'none';
   if (tnb) tnb.style.display = can('canCreateShipments') ? '' : 'none';
   if (nf)  nf.style.display  = (can('canViewDebts')       || can('canViewGeneral'))    ? '' : 'none';
-  if (nm)  nm.style.display  = (can('canManageCompanies') || can('canManageDrivers') || can('canManageUsers')) ? '' : 'none';
+  if (nm)  nm.style.display  = (can('canManageCompanies') || can('canManageContractors') || can('canManageDrivers') || can('canManageUsers')) ? '' : 'none';
 
   applyLang();
   loadDollarRate();
@@ -77,7 +79,8 @@ function navigate(page) {
     dashboard:      t('dashboard'),    shipments: t('shipments'),
     archive:        t('archive'),
     debts:          t('debtsPayments'),general:   t('generalReport'),
-    companies:      t('companies'),    drivers:   t('drivers'),
+    companies:      t('companies'),    contractors: t('contractors'),
+    drivers:        t('drivers'),
     users:          t('users'),        settings:  t('settings'),
     backup:         t('backupRestore')
   };
@@ -94,6 +97,7 @@ function navigate(page) {
     debts:          renderDebts,
     general:        renderGeneral,
     companies:      renderCompanies,
+    contractors:    renderContractors,
     drivers:        renderDrivers,
     users:          renderUsers,
     settings:       renderSettings,
@@ -272,6 +276,7 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
     if (e.target !== overlay) return;
     if (overlay.id === 'modal-prompt') cancelPromptModal();
     else if (overlay.id === 'modal-return-details') cancelWithdrawDetailsModal();
+    else if (overlay.id === 'modal-export-options') cancelExportOptionsModal();
     else overlay.classList.remove('open');
   });
 });
@@ -466,16 +471,52 @@ function sanitizeFilename(name) {
   return String(name || '').trim().replace(/[\\/:*?"<>|]/g, '').slice(0, 100);
 }
 
-/** Ask the user (via the styled promptInput modal) what to name an export file, pre-filled
- *  with a sensible default. Resolves to the sanitized name, or null if the user cancelled. */
-function askExportFilename(defaultName) {
+let _exportOptionsCancelHandler = null;
+
+/** Ask the user for both the export file name AND which saved column preset (report) to
+ *  export with — the "Default Columns" option plus every report in exportReports_cache.
+ *  Resolves to { filename, reportId } (reportId is '' for Default), or null if cancelled. */
+function askExportOptions(defaultName) {
   return new Promise(resolve => {
-    promptInput(
-      { title: t('exportFilenameTitle'), message: t('exportFilenamePrompt'), defaultValue: defaultName, type: 'text', placeholder: defaultName },
-      (val) => resolve(sanitizeFilename(val) || defaultName),
-      () => resolve(null)
-    );
+    document.getElementById('modal-export-title').textContent   = t('exportOptionsTitle');
+    document.getElementById('modal-export-message').textContent = t('exportOptionsMsg');
+    document.getElementById('modal-export-filename-label').textContent = t('exportOptionsFilenameLabel');
+    document.getElementById('modal-export-report-label').textContent   = t('exportOptionsReportLabel');
+
+    const nameInput = document.getElementById('export-opt-filename');
+    nameInput.value = defaultName;
+    nameInput.placeholder = defaultName;
+
+    const select  = document.getElementById('export-opt-report');
+    const reports = exportReports_cache || [];
+    select.innerHTML = `<option value="">${esc(t('defaultColumnsOption'))}</option>` +
+      reports.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+    select.value = '';
+
+    _exportOptionsCancelHandler = () => resolve(null);
+
+    const confirm = () => {
+      _exportOptionsCancelHandler = null;
+      closeModal('modal-export-options');
+      resolve({ filename: sanitizeFilename(nameInput.value) || defaultName, reportId: select.value || '' });
+    };
+    document.getElementById('export-opt-ok').onclick = confirm;
+    nameInput.onkeydown = e => {
+      if (e.key === 'Enter')  { e.preventDefault(); confirm(); }
+      if (e.key === 'Escape') { e.preventDefault(); cancelExportOptionsModal(); }
+    };
+
+    openModal('modal-export-options');
+    setTimeout(() => { nameInput.focus(); nameInput.select(); }, 50);
   });
+}
+
+/** Close the export-options modal via Cancel/✕/backdrop/Escape, firing its cancel resolve. */
+function cancelExportOptionsModal() {
+  closeModal('modal-export-options');
+  const cb = _exportOptionsCancelHandler;
+  _exportOptionsCancelHandler = null;
+  if (cb) cb();
 }
 
 /** Master registry of every column the shipments export (Excel + PDF) can include, in its
@@ -507,15 +548,15 @@ const EXPORT_COLUMN_DEFS = [
   { key: 'deliveryProfit',        label: 'Profit ($)',       width: 12, format: 'dollar', total: true, profitOnly: true },
 ];
 
-/** Merge EXPORT_COLUMN_DEFS with the saved order/visibility (exportColumnsConfig, loaded in
- *  loadCaches() and refreshed whenever Settings is opened) — keeping EVERY column, including
- *  hidden ones, so the Settings picker can still show and re-enable them. Any column added to
- *  EXPORT_COLUMN_DEFS after a config was saved is appended (visible) so new columns don't get
- *  silently lost. Falls back to the full default set, in registry order, if nothing is saved. */
-function resolveExportColumnsFull() {
+/** Merge EXPORT_COLUMN_DEFS with a saved order/visibility list — keeping EVERY column,
+ *  including hidden ones, so a picker UI can still show and re-enable them. Any column added
+ *  to EXPORT_COLUMN_DEFS after the config was saved is appended (visible) so new columns don't
+ *  get silently lost. Falls back to the full default set, in registry order, if config is
+ *  empty/missing. Shared by the default column config and every saved named report. */
+function resolveColumnsFromConfig(config) {
   const byKey = new Map(EXPORT_COLUMN_DEFS.map(c => [c.key, c]));
-  if (Array.isArray(exportColumnsConfig) && exportColumnsConfig.length) {
-    const merged = exportColumnsConfig
+  if (Array.isArray(config) && config.length) {
+    const merged = config
       .filter(s => byKey.has(s.key))
       .map(s => ({ ...byKey.get(s.key), visible: s.visible !== false }));
     const known = new Set(merged.map(c => c.key));
@@ -525,23 +566,37 @@ function resolveExportColumnsFull() {
   return EXPORT_COLUMN_DEFS.map(c => ({ ...c, visible: true }));
 }
 
-/** The ordered, filtered column list an export should actually use right now: the saved
- *  order minus anything hidden, and always dropping the profit column for users without
- *  canViewProfit regardless of the saved flag. */
-function getActiveExportColumns() {
+/** Resolves the default column config (exportColumnsConfig, loaded in loadCaches() and
+ *  refreshed whenever Settings is opened) against EXPORT_COLUMN_DEFS. */
+function resolveExportColumnsFull() {
+  return resolveColumnsFromConfig(exportColumnsConfig);
+}
+
+/** The ordered, filtered column list an export should actually use right now. Pass a saved
+ *  report's id to use that named preset's columns instead of the default config; omit it (or
+ *  pass a falsy/unknown id) to fall back to the default. Always drops the profit column for
+ *  users without canViewProfit, regardless of the saved flag. */
+function getActiveExportColumns(reportId) {
   const showProfit = can('canViewProfit');
-  return resolveExportColumnsFull().filter(c => c.visible && (!c.profitOnly || showProfit));
+  let config = exportColumnsConfig;
+  if (reportId) {
+    const report = (exportReports_cache || []).find(r => r.id === reportId);
+    if (report) config = report.columns;
+  }
+  return resolveColumnsFromConfig(config).filter(c => c.visible && (!c.profitOnly || showProfit));
 }
 
 async function exportExcel(defaultName) {
   const ships = window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
-  const columns = getActiveExportColumns();
-  if (!columns.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
-  const filename  = await askExportFilename(suggested);
-  if (!filename) return; // cancelled
+  const opts = await askExportOptions(suggested);
+  if (!opts) return; // cancelled
+
+  const filename = opts.filename;
+  const columns  = getActiveExportColumns(opts.reportId);
+  if (!columns.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   const sorted = [...ships].sort((a, b) => {
     const da = shipmentSortDate(a), db = shipmentSortDate(b);
@@ -678,12 +733,14 @@ async function exportPDF(defaultName) {
   if (!window.jspdf || !window.html2canvas) { toast(t('pdfLibMissing'), 'error'); return; }
   const ships = window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
-  const cols = getActiveExportColumns();
-  if (!cols.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
-  const filename  = await askExportFilename(suggested);
-  if (!filename) return; // cancelled
+  const opts = await askExportOptions(suggested);
+  if (!opts) return; // cancelled
+
+  const filename = opts.filename;
+  const cols     = getActiveExportColumns(opts.reportId);
+  if (!cols.length) { toast(t('noExportColumnsEnabled'), 'error'); return; }
 
   toast(t('generatingPdf'), 'info');
 

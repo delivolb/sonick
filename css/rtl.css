@@ -46,6 +46,8 @@
 [dir="rtl"] .page-header-actions { flex-direction: row-reverse; }
 [dir="rtl"] #demo-mode-banner { flex-direction: row-reverse; }
 
+[dir="rtl"] .phone-field { flex-direction: row-reverse; }
+
 /* ── Driver portal (driver.html) ── */
 [dir="rtl"] .driver-header      { flex-direction: row-reverse; }
 [dir="rtl"] .driver-header-id   { flex-direction: row-reverse; }

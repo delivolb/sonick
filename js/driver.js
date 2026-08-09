@@ -219,7 +219,7 @@ function orderCardHTML(s, { editable }) {
     </div>
     <div class="order-card-body">
       <div class="order-card-row"><span class="row-icon">${ICONS.user}</span> ${esc(s.customerName || '—')}</div>
-      ${s.customerPhone ? `<div class="order-card-row"><span class="row-icon">${ICONS.phone}</span> <a href="tel:${esc(s.customerPhone)}">${esc(s.customerPhone)}</a></div>` : ''}
+      ${s.customerPhone ? `<div class="order-card-row"><span class="row-icon">${ICONS.phone}</span> <a href="tel:${esc(s.customerPhone)}">${esc(formatPhoneWithFlag(s.customerPhone))}</a></div>` : ''}
       ${s.customerAddress ? `<div class="order-card-row"><span class="row-icon">${ICONS.mapPin}</span> ${esc(s.customerAddress)}</div>` : ''}
       <div class="order-card-row"><span class="row-icon">${ICONS.dollarSign}</span> <span class="order-card-price">$${formatNum(s.priceDollar || 0)}</span></div>
       ${s.description ? `<div class="order-card-row"><span class="row-icon">${ICONS.note}</span> ${esc(s.description)}</div>` : ''}
@@ -301,6 +301,7 @@ function applyDriverLang() {
   document.documentElement.setAttribute('dir', lang.dir);
   document.documentElement.setAttribute('lang', currentLang);
 
+  syncLogoImages(currentLang);
   document.getElementById('driver-login-title').textContent    = t('driverPortalTitle');
   document.getElementById('driver-login-subtitle').textContent = t('driverLoginSubtitle');
   document.getElementById('driver-label-username').textContent = t('loginUsernameLabel');

@@ -22,9 +22,11 @@ let editingId       = null;
 let dollPrice       = 0;
 let exportColumnsConfig = null; // saved order/visibility for shipment export columns (Settings → Export Columns); null = not customized yet, use the full default set
 
-let companies_cache  = [];
+let companies_cache   = [];
+let contractors_cache = [];
 let drivers_cache    = [];
 let billtypes_cache  = [];
+let exportReports_cache = []; // saved named export-column presets (Settings → Export Columns → Saved Reports)
 
 // ===== ROLES & PERMISSIONS =====
 const ROLES = {
@@ -32,7 +34,7 @@ const ROLES = {
     label: 'Admin',
     canViewShipments: true, canCreateShipments: true, canEditShipments: true,
     canDeleteShipments: true, canArchive: true, canViewFinance: true,
-    canViewProfit: true, canManageCompanies: true, canManageDrivers: true,
+    canViewProfit: true, canManageCompanies: true, canManageContractors: true, canManageDrivers: true,
     canManageUsers: true, canViewGeneral: true, canViewDebts: true, canExport: true,
     canManageBackup: true
   },
@@ -40,7 +42,7 @@ const ROLES = {
     label: 'Manager',
     canViewShipments: true, canCreateShipments: true, canEditShipments: true,
     canDeleteShipments: false, canArchive: true, canViewFinance: true,
-    canViewProfit: false, canManageCompanies: true, canManageDrivers: true,
+    canViewProfit: false, canManageCompanies: true, canManageContractors: true, canManageDrivers: true,
     canManageUsers: false, canViewGeneral: true, canViewDebts: true, canExport: true,
     canManageBackup: false
   },
@@ -48,7 +50,7 @@ const ROLES = {
     label: 'Operator',
     canViewShipments: true, canCreateShipments: true, canEditShipments: false,
     canDeleteShipments: false, canArchive: false, canViewFinance: false,
-    canViewProfit: false, canManageCompanies: false, canManageDrivers: false,
+    canViewProfit: false, canManageCompanies: false, canManageContractors: false, canManageDrivers: false,
     canManageUsers: false, canViewGeneral: false, canViewDebts: false, canExport: false,
     canManageBackup: false
   },
@@ -56,7 +58,7 @@ const ROLES = {
     label: 'Viewer',
     canViewShipments: true, canCreateShipments: false, canEditShipments: false,
     canDeleteShipments: false, canArchive: false, canViewFinance: false,
-    canViewProfit: false, canManageCompanies: false, canManageDrivers: false,
+    canViewProfit: false, canManageCompanies: false, canManageContractors: false, canManageDrivers: false,
     canManageUsers: false, canViewGeneral: false, canViewDebts: false, canExport: false,
     canManageBackup: false
   }
@@ -245,15 +247,19 @@ async function grantPortalAccessToExistingDriver(oldDriverId, name, phones, acti
 async function loadCaches() {
   if (!db) return;
   try {
-    const [compSnap, drvSnap, btSnap, settSnap] = await Promise.all([
+    const [compSnap, contrSnap, drvSnap, btSnap, settSnap, repSnap] = await Promise.all([
       db.collection('sonick_companies').orderBy('name').get(),
+      db.collection('sonick_contractors').orderBy('name').get(),
       db.collection('sonick_drivers').orderBy('name').get(),
       db.collection('sonick_billtypes').get(),
-      db.collection('sonick_settings').doc('general').get()
+      db.collection('sonick_settings').doc('general').get(),
+      db.collection('sonick_export_reports').orderBy('name').get()
     ]);
-    companies_cache = compSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    companies_cache   = compSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    contractors_cache = contrSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     drivers_cache   = drvSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     billtypes_cache = btSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    exportReports_cache = repSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     if (settSnap.exists) {
       const settingsData = settSnap.data();
       dollPrice = settingsData.dollarRate || 0;
@@ -265,6 +271,7 @@ async function loadCaches() {
       { id: 'c1', name: 'Alpha Logistics', phones: '01-123456', deliveryCost: 5 },
       { id: 'c2', name: 'Beta Express',    phones: '03-654321', deliveryCost: 7 },
     ];
+    contractors_cache = [];
     drivers_cache = [
       { id: 'd1', name: 'Ahmad Khalil', phones: '70-111222', active: true },
       { id: 'd2', name: 'Samir Nasr',   phones: '03-333444', active: true },
@@ -277,6 +284,7 @@ async function loadCaches() {
     ];
     dollPrice = 89500;
     exportColumnsConfig = null;
+    exportReports_cache = [];
     const reason = (e?.code === 'permission-denied' || /insufficient permissions/i.test(e?.message || ''))
       ? 'Demo mode: Firestore denied access to companies/drivers/settings — check your security rules.'
       : 'Demo mode: could not load companies/drivers/settings — showing sample data.';

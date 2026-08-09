@@ -55,8 +55,11 @@
   margin-bottom: 12px;
   box-shadow: var(--shadow-glow);
 }
-.login-logo h1 { font-size: 1.571rem; font-weight: 700; }
+.login-logo h1 { font-size: 1.571rem; font-weight: 700; margin-top: 12px; }
 .login-logo p { color: var(--text-3); font-size: 0.929rem; margin-top: 4px; }
+/* Full lockup (shield + wordmark) used on launch/loading + login screens */
+.logo-full-img { width: auto; object-fit: contain; }
+.login-logo-img { height: 168px; margin-bottom: 4px; }
 .login-error {
   background: var(--red-ghost);
   border: 1px solid rgba(239,68,68,0.2);
@@ -94,13 +97,13 @@
   box-shadow: 0 4px 14px rgba(79,110,245,0.4);
 }
 .logo-mark-img {
-  width: 38px; height: 38px; object-fit: contain;
+  width: 44px; height: 44px; object-fit: contain;
   flex-shrink: 0;
   filter: drop-shadow(0 2px 8px rgba(79,110,245,0.35));
 }
 .logo-mark-img-lg { width: 84px; height: 84px; margin-bottom: 4px; }
-.sidebar-logo .logo-text { font-size: 1.143rem; font-weight: 700; }
-.sidebar-logo .logo-sub { font-size: 0.714rem; color: var(--text-3); margin-top: 1px; letter-spacing: 0.5px; }
+.sidebar-logo .logo-text { font-size: 1.143rem; font-weight: 800; letter-spacing: 0.4px; }
+.sidebar-logo .logo-sub { font-size: 0.714rem; color: var(--blue); font-weight: 600; margin-top: 1px; letter-spacing: 0.5px; }
 /* Signature: dashed "route line" beneath the sidebar header, evoking a delivery route */
 .sidebar-header::after {
   content: '';
@@ -249,7 +252,7 @@
   flex-direction: column; gap: 16px;
 }
 .loading-logo-img {
-  width: 84px; height: 84px;
+  height: 150px;
   object-fit: contain;
   animation: loading-pulse 1.6s ease-in-out infinite;
 }
@@ -271,4 +274,4 @@
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-height: 70vh; gap: 16px;
 }
-.home-blank-logo { width: 110px; height: 110px; object-fit: contain; opacity: 0.92; }
+.home-blank-logo { height: 220px; object-fit: contain; opacity: 0.92; }

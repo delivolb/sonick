@@ -28,12 +28,27 @@ function _syncThemeBtn(theme) {
   }
 }
 
+/* ===================================================
+   Logo lockup swap (English <-> Arabic full logo art)
+   Shared by index.html and driver.html. The full lockup
+   (shield + wordmark) is a single flattened image per
+   language — swap its src on the loading/login screens
+   whenever the active language changes.
+   ================================================== */
+function syncLogoImages(lang) {
+  const src = lang === 'ar' ? 'assets/logo-full-ar.png' : 'assets/logo-full.png';
+  document.querySelectorAll('.logo-full-img').forEach(function (img) {
+    if (img.getAttribute('src') !== src) img.setAttribute('src', src);
+  });
+}
+
 /* ── Immediately restore saved theme before first paint (no flicker) ── */
 (function () {
   const saved = localStorage.getItem(THEME_KEY) || 'dark';
   document.documentElement.setAttribute('data-theme', saved);
-  /* Sync button after DOM is ready */
+  /* Sync button + logo lockup after DOM is ready */
   document.addEventListener('DOMContentLoaded', function () {
     _syncThemeBtn(saved);
+    syncLogoImages(localStorage.getItem('sonick_lang') || 'en');
   });
 })();
