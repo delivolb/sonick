@@ -17,6 +17,7 @@ function showLogin() {
 function showApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
+  hideDemoBanner();
   setupUI();
   navigate('home');
 }
