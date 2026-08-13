@@ -124,7 +124,7 @@ function closeSidebar() {
 function openModal(id)  { document.getElementById(id)?.classList.add('open'); }
 function closeModal(id) { document.getElementById(id)?.classList.remove('open'); }
 
-function confirmAction(title, message, callback) {
+function confirmAction(title, message, callback, onCancel) {
   document.getElementById('modal-confirm-title').textContent = title;
   document.getElementById('modal-confirm-body').innerHTML = message
     ? `<p style="color:var(--text-2);padding:8px 0;white-space:pre-line;">${esc(message)}</p>` : '';
@@ -132,6 +132,8 @@ function confirmAction(title, message, callback) {
     closeModal('modal-confirm');
     callback();
   };
+  const cancelBtn = document.getElementById('modal-confirm-cancel');
+  if (cancelBtn) cancelBtn.onclick = () => { closeModal('modal-confirm'); if (onCancel) onCancel(); };
   openModal('modal-confirm');
 }
 
@@ -379,6 +381,61 @@ const STATUS_CONFIG = {
 /** All status keys in order — used for <select> dropdowns */
 const ALL_STATUSES = Object.keys(STATUS_CONFIG);
 
+/* ── Order Type (عادي / تبديل) ──
+   Normal = a regular delivery order. Exchange = a swap/replacement order
+   (e.g. exchanging a previously delivered item). Admin picks this when
+   adding/editing a shipment; it's shown on the shipment detail view too. */
+const ORDER_TYPE_CONFIG = {
+  'Normal':   { key: 'orderTypeNormal',   cls: 'badge-gray',  icon: '•' },
+  'Exchange': { key: 'orderTypeExchange', cls: 'badge-blue',  icon: '⇄' },
+};
+
+/** All order type keys in order — used for <select> dropdowns */
+const ALL_ORDER_TYPES = Object.keys(ORDER_TYPE_CONFIG);
+
+function orderTypeBadge(orderType) {
+  const cfg = ORDER_TYPE_CONFIG[orderType];
+  if (cfg) {
+    return `<span class="badge ${cfg.cls}">${cfg.icon} ${esc(t(cfg.key))}</span>`;
+  }
+  return `<span class="badge badge-gray">—</span>`;
+}
+
+/* ── Financial rules shared by Orders and General Report ──
+   A shipment counts toward delivery-profit totals only if a delivery action
+   actually happened (delivered, or returned — paid or unpaid — or withdrawn).
+   Plain Cancelled / Delayed / Pending orders never generated a delivery run,
+   so they contribute nothing to profit or to totals. */
+const PROFIT_ELIGIBLE_STATUSES = ['Delivered', 'Returned-Paid', 'Returned-Unpaid', 'Withdrawn'];
+
+function isProfitEligible(status) {
+  return PROFIT_ELIGIBLE_STATUSES.includes(status);
+}
+
+/** Gross $ collected for a shipment:
+ *  Delivered → full order value collected from the customer.
+ *  Returned-Paid → only the return/delivery fee that was collected (returnedDeliveryCost).
+ *  Returned-Unpaid → nothing was collected.
+ *  Withdrawn → the withdrawn amount is subtracted back out.
+ *  Cancelled / Delayed / Pending → nothing collected (no delivery happened). */
+function shipTotalDollar(s) {
+  switch (s.status) {
+    case 'Delivered':     return s.priceDollar || 0;
+    case 'Returned-Paid': return s.returnedDeliveryCost || 0;
+    case 'Withdrawn':     return -(s.withdrawnAmountDollar || s.priceDollar || 0);
+    default:              return 0;
+  }
+}
+/** Same rule, in Lebanese Lira (no LL equivalent is tracked for returnedDeliveryCost). */
+function shipTotalLeb(s) {
+  switch (s.status) {
+    case 'Delivered': return s.priceLeb || 0;
+    case 'Withdrawn':  return -(s.withdrawnAmountLeb || s.priceLeb || 0);
+    default:           return 0;
+  }
+}
+
+
 function statusBadge(status) {
   const cfg = STATUS_CONFIG[status];
   if (cfg) {
@@ -386,6 +443,18 @@ function statusBadge(status) {
   }
   /* Fallback for any legacy / unknown status */
   return `<span class="badge badge-gray">• ${esc(status || '—')}</span>`;
+}
+
+/** Compact row of mini status-count badges, e.g. for report tables.
+ *  counts: { 'Delivered': 5, 'Pending': 2, ... } — zero/missing statuses are skipped. */
+function statusBreakdownCell(counts) {
+  const parts = ALL_STATUSES
+    .filter(s => counts[s] > 0)
+    .map(s => {
+      const cfg = STATUS_CONFIG[s];
+      return `<span class="badge badge-mini ${cfg.cls}">${cfg.icon} ${esc(t(cfg.key))}: ${counts[s]}</span>`;
+    });
+  return `<div class="status-breakdown-cell">${parts.join('') || '<span style="color:var(--text-3);">—</span>'}</div>`;
 }
 
 function mobileShipCard(s) {
@@ -536,6 +605,7 @@ const EXPORT_COLUMN_DEFS = [
   { key: 'driverName',            label: 'Driver',           width: 16, format: 'text'   },
   { key: 'contractorName',        label: 'Contractor',       width: 16, format: 'text'   },
   { key: 'statusLabel',           label: 'Status',           width: 18, format: 'status' },
+  { key: 'orderTypeLabel',        label: 'Order Type',       width: 14, format: 'orderType' },
   { key: 'priceDollar',           label: 'Price ($)',        width: 12, format: 'dollar', total: true },
   { key: 'priceLeb',              label: 'Price (L.L.)',     width: 14, format: 'leb',    total: true },
   { key: 'deliveryCost',          label: 'Delivery Cost',    width: 14, format: 'dollar' },
@@ -655,6 +725,7 @@ async function exportExcel(defaultName) {
     const style = EXPORT_STATUS_STYLE[s.status] || EXPORT_STATUS_STYLE['Pending'];
     const rowArray = columns.map(c => {
       if (c.format === 'status') return t(STATUS_CONFIG[s.status]?.key) || s.status || '—';
+      if (c.format === 'orderType') return t(ORDER_TYPE_CONFIG[s.orderType]?.key) || t('orderTypeNormal');
       if (c.format === 'date')   return fmtDate(s.date || s.createdAt);
       return s[c.key] ?? ((c.format === 'dollar' || c.format === 'leb') ? 0 : '');
     });
@@ -762,6 +833,7 @@ async function exportPDF(defaultName) {
     const cells = cols.map(c => {
       let val;
       if      (c.format === 'status') val = esc(t(STATUS_CONFIG[s.status]?.key) || s.status || '—');
+      else if (c.format === 'orderType') val = esc(t(ORDER_TYPE_CONFIG[s.orderType]?.key) || t('orderTypeNormal'));
       else if (c.format === 'date')   val = esc(fmtDate(s.date || s.createdAt));
       else if (c.format === 'dollar') val = '$' + formatNum(s[c.key] || 0);
       else if (c.format === 'leb')    val = formatNum(s[c.key] || 0);

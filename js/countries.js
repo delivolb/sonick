@@ -18,6 +18,18 @@ function isoToFlagEmoji(iso2) {
   );
 }
 
+/** Build an actual flag <img> for an ISO code, instead of relying on the OS/browser's emoji
+ *  font to render the Unicode flag glyph — Windows in particular shows the raw two-letter
+ *  code ("LB") instead of a flag image for most users, since its default emoji font doesn't
+ *  include colored flag glyphs. flagcdn.com serves a real small flag image per ISO code; if
+ *  that fails to load (offline, blocked network), it falls back to the emoji glyph so a
+ *  flag-shaped thing still renders instead of a broken image icon. */
+function flagImgHTML(iso2, sizeClass) {
+  const iso = String(iso2 || '').toLowerCase();
+  const emojiFallback = isoToFlagEmoji(iso2).replace(/'/g, '&#39;');
+  return `<img src="https://flagcdn.com/w20/${iso}.png" alt="${iso.toUpperCase()}" class="flag-icon${sizeClass ? ' ' + sizeClass : ''}" loading="lazy" onerror="this.outerHTML='${emojiFallback}'">`;
+}
+
 // [iso2, name, dial] — Lebanon first (this app's home market and the default for
 // unrecognized/legacy numbers), then the wider Levant/Gulf region, then a broad set
 // of major world markets so the picker is useful for international customers too.

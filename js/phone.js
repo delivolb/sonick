@@ -42,7 +42,7 @@ function phoneFieldHTML(prefix, value, extraInputAttrs) {
   <div class="phone-field">
     <div class="dropdown" id="${prefix}-dd">
       <button type="button" class="phone-code-btn" onclick="togglePhoneDropdown('${prefix}')">
-        <span class="phone-flag">${country.flag}</span><span class="phone-dial">+${country.dial}</span><span class="phone-caret">▾</span>
+        <span class="phone-flag">${flagImgHTML(country.iso)}</span><span class="phone-dial">+${country.dial}</span><span class="phone-caret">▾</span>
       </button>
       <div class="dropdown-menu phone-dropdown-menu">
         <input type="text" class="phone-country-search" id="${prefix}-search" placeholder="${esc(t('phoneCountrySearchPlaceholder'))}" oninput="renderPhoneCountryList('${prefix}', this.value)">
@@ -78,7 +78,7 @@ function renderPhoneCountryList(prefix, query) {
     c.name.toLowerCase().includes(q) || c.dial.startsWith(q) || c.iso.toLowerCase() === q);
   list.innerHTML = filtered.length ? filtered.map(c => `
     <div class="phone-country-item" onclick="selectPhoneCountry('${prefix}','${c.iso}')">
-      <span class="phone-flag">${c.flag}</span><span class="phone-country-name">${esc(c.name)}</span><span class="phone-country-dial">+${c.dial}</span>
+      <span class="phone-flag">${flagImgHTML(c.iso)}</span><span class="phone-country-name">${esc(c.name)}</span><span class="phone-country-dial">+${c.dial}</span>
     </div>`).join('') : `<div class="phone-country-empty">${esc(t('noMatchesFound'))}</div>`;
 }
 
@@ -88,7 +88,7 @@ function selectPhoneCountry(prefix, iso) {
   const country = COUNTRIES.find(c => c.iso === iso);
   if (!country) return;
   const btn = document.querySelector(`#${prefix}-dd .phone-code-btn`);
-  if (btn) btn.innerHTML = `<span class="phone-flag">${country.flag}</span><span class="phone-dial">+${country.dial}</span><span class="phone-caret">▾</span>`;
+  if (btn) btn.innerHTML = `<span class="phone-flag">${flagImgHTML(country.iso)}</span><span class="phone-dial">+${country.dial}</span><span class="phone-caret">▾</span>`;
   const isoInput = document.getElementById(prefix + '-iso');
   if (isoInput) isoInput.value = country.iso;
   document.getElementById(prefix + '-dd')?.classList.remove('open');
@@ -113,10 +113,24 @@ function clearPhoneField(prefix) {
 
 /** Read-only display helper: prefix an already-stored phone string with its country's flag
  *  (e.g. "🇱🇧 +961 71234567"), for tables, detail panels, and mobile cards. Returns '—' for
- *  an empty value, matching how phone numbers already render elsewhere in the app. */
+ *  an empty value, matching how phone numbers already render elsewhere in the app.
+ *  Plain text (emoji flag) — kept for any non-HTML use; UI call sites should use
+ *  phoneWithFlagHTML() below instead, which renders a real flag image. */
 function formatPhoneWithFlag(raw) {
   if (!raw) return '—';
   const { iso, dial, national } = parsePhoneValue(raw);
   const country = COUNTRIES.find(c => c.iso === iso);
   return `${country ? country.flag + ' ' : ''}+${dial} ${national}`.trim();
+}
+
+/** Same as formatPhoneWithFlag(), but returns ready-to-insert HTML with a real flag <img>
+ *  (see flagImgHTML in countries.js) instead of relying on emoji font support. The number
+ *  portion is escaped internally, so call sites should NOT wrap this in esc(). Returns the
+ *  plain '—' placeholder (no markup) for an empty value. */
+function phoneWithFlagHTML(raw) {
+  if (!raw) return '—';
+  const { iso, dial, national } = parsePhoneValue(raw);
+  const country = COUNTRIES.find(c => c.iso === iso);
+  const flag = country ? flagImgHTML(country.iso, 'flag-icon-inline') + ' ' : '';
+  return `${flag}${esc('+' + dial + ' ' + national)}`;
 }

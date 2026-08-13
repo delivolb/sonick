@@ -165,6 +165,7 @@
       </div>
     </header>
     <div class="page-content" id="page-content"></div>
+    <datalist id="known-addresses"></datalist>
   </main>
 </div>
 
@@ -278,6 +279,19 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-entity-report">
+  <div class="modal modal-lg modal-report-fit">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-entity-report-title">General Report</h2>
+      <button class="modal-close" onclick="closeModal('modal-entity-report')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-entity-report-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-entity-report')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-confirm">
   <div class="modal" style="max-width:400px;">
     <div class="modal-header">
@@ -286,7 +300,7 @@
     </div>
     <div class="modal-body" id="modal-confirm-body"></div>
     <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('modal-confirm')">Cancel</button>
+      <button class="btn btn-secondary" id="modal-confirm-cancel" onclick="closeModal('modal-confirm')">Cancel</button>
       <button class="btn btn-danger" id="modal-confirm-ok">Confirm</button>
     </div>
   </div>

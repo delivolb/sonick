@@ -132,12 +132,53 @@ async function fetchShipmentsFromDB() {
     if (db) {
       const snap = await db.collection('sonick_shipments').orderBy('createdAt', 'desc').limit(500).get();
       ships = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      backfillMissingOrderTypes('sonick_shipments', ships);
     }
   } catch (e) { ships = getDemoShipments(); }
   return sortShipsByActivity(ships);
 }
 
+/** One-time-per-record silent migration: any shipment/archive doc saved before the Order
+ *  Type field existed has no `orderType` value. Rather than leaving that to a display-time
+ *  fallback, quietly write `orderType: 'Normal'` back onto those docs in Firestore the first
+ *  time they're loaded, so old orders end up with a real, persisted "Normal" value like any
+ *  new one. Cheap no-op once every doc has been patched (nothing left missing to write). */
+let _orderTypeBackfillRunning = new Set();
+async function backfillMissingOrderTypes(collectionName, docs) {
+  if (!db || _orderTypeBackfillRunning.has(collectionName)) return;
+  const missing = (docs || []).filter(d => !ALL_ORDER_TYPES.includes(d.orderType));
+  if (!missing.length) return;
+  _orderTypeBackfillRunning.add(collectionName);
+  try {
+    const CHUNK = 400;
+    for (let i = 0; i < missing.length; i += CHUNK) {
+      const batch = db.batch();
+      missing.slice(i, i + CHUNK).forEach(d => {
+        batch.update(db.collection(collectionName).doc(d.id), { orderType: 'Normal' });
+        d.orderType = 'Normal'; // reflect immediately in the in-memory copy too
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn(`Order type backfill (${collectionName}) failed:`, e.message);
+  } finally {
+    _orderTypeBackfillRunning.delete(collectionName);
+  }
+}
+
 let _shipmentsUnsub = null;
+
+/** Rebuild the shared #known-addresses <datalist> (see index.html) from whatever shipment
+ *  data is currently in memory — powers the "list=" autocomplete on every delivery-address
+ *  input (Quick Add bar, New/Edit Shipment modal, inline table-cell edit) so staff can pick
+ *  a previously-used address instead of retyping it, while the field stays plain free text. */
+function refreshKnownAddressesDatalist() {
+  const dl = document.getElementById('known-addresses');
+  if (!dl) return;
+  const set = new Set();
+  (window._allShips || []).forEach(s => { const a = (s.customerAddress || '').trim(); if (a) set.add(a); });
+  dl.innerHTML = [...set].sort((a, b) => a.localeCompare(b)).map(a => `<option value="${esc(a)}">`).join('');
+}
 
 /** Subscribe to live shipment updates so admin edits and driver-portal edits (status
  *  changes, notes, reassignment) reflect instantly on both sides without a manual refresh.
@@ -148,7 +189,11 @@ function subscribeShipments(onData) {
   if (!db) { onData(getDemoShipments()); return; }
   _shipmentsUnsub = db.collection('sonick_shipments').orderBy('createdAt', 'desc').limit(500)
     .onSnapshot(
-      snap => onData(sortShipsByActivity(snap.docs.map(d => ({ id: d.id, ...d.data() })))),
+      snap => {
+        const ships = sortShipsByActivity(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        onData(ships);
+        backfillMissingOrderTypes('sonick_shipments', ships);
+      },
       err  => { console.warn('Shipments live-sync error:', err.message); onData(getDemoShipments()); }
     );
 }
@@ -157,6 +202,7 @@ function subscribeShipments(onData) {
  *  keeps the active Company/Driver/Contractor/Status filters (and the Quick Add bar) intact. */
 async function refreshShipmentsData() {
   window._allShips = await fetchShipmentsFromDB();
+  refreshKnownAddressesDatalist();
   filterShipments();
 }
 
@@ -169,8 +215,32 @@ const PROFIT_VISIBLE_KEY = 'sonick_show_profit';
 function isProfitVisible() { return localStorage.getItem(PROFIT_VISIBLE_KEY) === 'true'; }
 function toggleProfitVisibility() {
   localStorage.setItem(PROFIT_VISIBLE_KEY, isProfitVisible() ? 'false' : 'true');
-  if (currentPage === 'shipments') renderShipments();
-  else if (currentPage === 'archive') renderArchive();
+  const btnHTML = isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn');
+  if (currentPage === 'shipments') {
+    const btn = document.getElementById('ship-profit-toggle-btn');
+    if (btn) btn.innerHTML = btnHTML;
+    filterShipments();
+  } else if (currentPage === 'archive') {
+    const btn = document.getElementById('arch-profit-toggle-btn');
+    if (btn) btn.innerHTML = btnHTML;
+    filterArchive();
+  }
+}
+
+/** Builds the Shipments table's <thead> row. The "our profit" column follows the
+ *  show/hide toggle + permission; the driver/contractor profit columns are independent —
+ *  they only ever appear when that specific driver/contractor is selected in the filters. */
+function shipsTheadRowHTML(canEditCells, showOurProfit, showDriverProfit, showContractorProfit) {
+  return `<tr>
+    ${canEditCells ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="ships-select-all" onchange="toggleSelectAllShipments(this)"></th>` : ''}
+    <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
+    <th>${t('driver')}</th><th>${t('contractor')}</th>
+    <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
+    ${showOurProfit        ? `<th>${t('profitCol')}</th>`             : ''}
+    ${showDriverProfit     ? `<th>${t('driverProfitCol')}</th>`       : ''}
+    ${showContractorProfit ? `<th>${t('contractorProfitCol')}</th>`   : ''}
+    <th>${t('status')}</th><th>${t('date')}</th><th>${t('actions')}</th>
+  </tr>`;
 }
 
 async function renderShipments() {
@@ -258,7 +328,7 @@ async function renderShipments() {
       </div>
       <div class="form-group fo-f-address" style="margin-bottom:0;min-width:150px;">
         <label class="form-label">${t('address')}</label>
-        <input type="text" id="fo-address" class="form-input" placeholder="${t('deliveryAddressPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+        <input type="text" id="fo-address" class="form-input" list="known-addresses" placeholder="${t('deliveryAddressPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
       <div class="form-group fo-f-desc" style="margin-bottom:0;min-width:150px;">
         <label class="form-label">${t('descriptionNotesLabel')}</label>
@@ -299,24 +369,20 @@ async function renderShipments() {
         </div>` : ''}
       </div>
       ${can('canArchive')  ? `<button class="btn btn-secondary btn-sm" onclick="archiveFilteredShipments()">${t('archiveGroupBtn')}</button>` : ''}
-      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
+      <button class="btn btn-secondary btn-sm" id="ship-entity-report-btn" style="display:none;" onclick="openEntityGeneralReport()">${ICONS.trendingUp} ${t('generalReportBtn')}</button>
+      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" id="ship-profit-toggle-btn" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
     </div>
     <div class="table-footer">
       <span id="ships-total-label" style="color:var(--text-3);"></span>
-      <span id="ships-summary"     style="color:var(--text-2);font-family:var(--mono);"></span>
+      <span id="ships-summary"     style="font-family:var(--mono);font-size:1rem;font-weight:600;"></span>
     </div>
     <div class="table-scroll">
       <table id="ships-table">
-        <thead><tr>
-          ${can('canEditShipments') ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="ships-select-all" onchange="toggleSelectAllShipments(this)"></th>` : ''}
-          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
-          <th>${t('driver')}</th><th>${t('contractor')}</th>
-          <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
-          ${showProfit ? `<th>${t('profitCol')}</th><th>${t('driverProfitCol')}</th><th>${t('contractorProfitCol')}</th>` : ''}
-          <th>${t('status')}</th><th>${t('date')}</th><th>${t('actions')}</th>
-        </tr></thead>
+        <thead>
+          ${shipsTheadRowHTML(can('canEditShipments'), showProfit, false, false)}
+        </thead>
         <tbody id="ships-tbody"></tbody>
       </table>
     </div>
@@ -324,7 +390,7 @@ async function renderShipments() {
   <div class="mobile-cards" id="ships-mobile"></div>`;
 
   window._allShips = [];
-  subscribeShipments(ships => { window._allShips = ships; filterShipments(); });
+  subscribeShipments(ships => { window._allShips = ships; refreshKnownAddressesDatalist(); filterShipments(); });
 }
 
 /** Show a summary in the status filter button: all/one/"N selected" */
@@ -527,8 +593,10 @@ async function bulkAssignOrders() {
   if (!nums.length) { toast(t('orderNumbersRequired'), 'error'); return; }
 
   const updates = {};
-  if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName; }
-  if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; }
+  // Assigning a driver clears any existing contractor on that order, and vice versa —
+  // the two are mutually exclusive, so the payload always states both explicitly.
+  if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName;     updates.contractorId = ''; updates.contractorName = ''; }
+  if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; updates.driverId     = ''; updates.driverName     = ''; }
 
   const allShips = window._allShips || [];
   const matched  = [];
@@ -544,14 +612,16 @@ async function bulkAssignOrders() {
   }
 
   // A shipment "conflicts" if it already carries a driver/contractor that differs from
-  // the one this assignment would set. Assigning to the same driver/contractor again, or
+  // the one this assignment would set — including converting it from a contractor order
+  // to a driver order or vice versa. Assigning to the same driver/contractor again, or
   // filling in a field that was previously empty, is not a conflict.
   const conflicts    = [];
   const nonConflicts = [];
   matched.forEach(s => {
     const driverConflict     = updates.driverId     && s.driverId     && s.driverId     !== updates.driverId;
     const contractorConflict = updates.contractorId && s.contractorId && s.contractorId !== updates.contractorId;
-    if (driverConflict || contractorConflict) conflicts.push(s); else nonConflicts.push(s);
+    const crossTypeConflict  = (updates.driverId && s.contractorId) || (updates.contractorId && s.driverId);
+    if (driverConflict || contractorConflict || crossTypeConflict) conflicts.push(s); else nonConflicts.push(s);
   });
 
   if (!conflicts.length) {
@@ -606,7 +676,7 @@ function openReassignConfirmModal(nonConflicts, conflicts, notFound, updates) {
   const list = document.getElementById('reassign-confirm-list');
   if (list) {
     list.innerHTML = conflicts.map(s => {
-      const currentName = updates.driverId
+      const currentName = s.driverId
         ? (s.driverName || '')
         : (s.contractorName || '');
       const newName = updates.driverId ? (updates.driverName || '') : (updates.contractorName || '');
@@ -661,6 +731,22 @@ async function confirmBulkReassign() {
   await _applyBulkAssign(toApply, updates, notFound);
 }
 
+/** Build the "Total $ | L.L. total | Profit | Amount Due [| Withdrawn]" summary line as
+ *  color-coded HTML instead of a single flat-colored string — same segment colors used
+ *  everywhere else these figures appear (green for profit, per fin-value.positive; purple
+ *  for the "amount due" figures, matching the Outcome cards on the General Report; blue/amber
+ *  for $ / L.L. totals, matching the Income stat cards; red for withdrawn amounts, per
+ *  fin-value.negative). Shared by the Shipments and Archive pages so both stay in sync. */
+function shipSummaryLineHTML({ totalDol, totalLeb, profitLabel, profitValue, profitVisible, dueLabel, withdrawnDol, withdrawnLeb, withdrawnCount, totalLabel }) {
+  let html = `<span style="color:var(--blue);">${totalLabel || ''}$${formatNum(totalDol)}</span> | <span style="color:var(--amber);">L.L. ${formatNum(totalLeb)}</span>`;
+  if (profitVisible) {
+    html += ` | <span style="color:var(--green);">${esc(profitLabel)}: $${formatNum(profitValue)}</span>`;
+    html += ` | <span style="color:var(--purple);">${esc(dueLabel)}: $${formatNum(totalDol - profitValue)}</span>`;
+  }
+  if (withdrawnCount) html += ` | <span style="color:var(--red);">${esc(t('withdrawnLabel'))}: $${formatNum(withdrawnDol)} / L.L. ${formatNum(withdrawnLeb)}</span>`;
+  return html;
+}
+
 function filterShipments() {
   const searchRaw  = (document.getElementById('ship-search')?.value || '').trim();
   const searchNums = searchRaw.includes(',')
@@ -700,43 +786,76 @@ function filterShipments() {
 
   window._filteredShips = ships; // exact "searched rows" set, used by archiveFilteredShipments()
 
-  const showProfit = can('canViewProfit') && isProfitVisible();
+  const canSeeProfit        = can('canViewProfit');
+  const showOurProfit        = canSeeProfit && isProfitVisible();
+  const showDriverProfit     = canSeeProfit && !!driver;
+  const showContractorProfit = canSeeProfit && !!contractor;
   let totalDol = 0, totalLeb = 0, totalProfit = 0;
   let withdrawnDol = 0, withdrawnLeb = 0, withdrawnCount = 0;
   let driverProfitTotal = 0, contractorProfitTotal = 0;
   ships.forEach(s => {
-    totalDol    += s.priceDollar    || 0;
-    totalLeb    += s.priceLeb       || 0;
-    totalProfit += s.deliveryProfit || 0;
-    if (s.status === 'Returned-Paid') totalProfit -= (s.returnedDeliveryCost || 0);
+    totalDol    += shipTotalDollar(s);
+    totalLeb    += shipTotalLeb(s);
+    const profitEligible = isProfitEligible(s.status);
+    if (profitEligible) {
+      totalProfit            += s.deliveryProfit         || 0;
+      driverProfitTotal       += s.driverDeliveryCost      || 0;
+      contractorProfitTotal   += s.contractorDeliveryCost  || 0;
+    }
     if (s.status === 'Withdrawn') {
       withdrawnDol += s.withdrawnAmountDollar || 0;
       withdrawnLeb += s.withdrawnAmountLeb    || 0;
       withdrawnCount++;
     }
-    driverProfitTotal     += s.driverDeliveryCost     || 0;
-    contractorProfitTotal += s.contractorDeliveryCost || 0;
   });
-  const netDol = totalDol - withdrawnDol;
-  const netLeb = totalLeb - withdrawnLeb;
+  const anyEntityFilterSelected = !!(company || driver || contractor);
+
+  // The per-entity General Report popup only makes sense when exactly one of
+  // Company/Driver/Contractor is picked alone — not combined with another, and not none.
+  const singleEntitySelected = [company, driver, contractor].filter(Boolean).length === 1;
+  window._entityReportSelection = singleEntitySelected
+    ? (driver ? { type: 'driver', name: driver } : contractor ? { type: 'contractor', name: contractor } : { type: 'company', name: company })
+    : null;
+  const entityReportBtn = document.getElementById('ship-entity-report-btn');
+  if (entityReportBtn) entityReportBtn.style.display = singleEntitySelected ? 'inline-flex' : 'none';
 
   const tbody    = document.getElementById('ships-tbody');
+  const thead    = document.querySelector('#ships-table thead');
   const mobile   = document.getElementById('ships-mobile');
   const countEl  = document.getElementById('ships-count');
   const summaryEl= document.getElementById('ships-summary');
   const totalEl  = document.getElementById('ships-total-label');
 
+  const canEditCells = can('canEditShipments');
+  if (thead) thead.innerHTML = shipsTheadRowHTML(canEditCells, showOurProfit, showDriverProfit, showContractorProfit);
+
   if (countEl)   countEl.textContent   = `${ships.length} ${t('shipments')}`;
-  if (summaryEl) summaryEl.textContent = `${t('total')} $${formatNum(totalDol)} | L.L. ${formatNum(totalLeb)}`
-    + (showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : '')
-    + (showProfit && driver && !contractor     ? ` | ${t('driverProfitLabel')}: $${formatNum(driverProfitTotal)}`         : '')
-    + (showProfit && contractor && !driver     ? ` | ${t('contractorProfitLabel')}: $${formatNum(contractorProfitTotal)}` : '')
-    + (showProfit && driver && contractor      ? ` | ${t('driverProfitLabel')}: $${formatNum(driverProfitTotal)} | ${t('contractorProfitLabel')}: $${formatNum(contractorProfitTotal)}` : '')
-    + (withdrawnCount ? ` | ${t('withdrawnLabel')}: $${formatNum(withdrawnDol)} / L.L. ${formatNum(withdrawnLeb)} | ${t('netRemainingLabel')}: $${formatNum(netDol)} / L.L. ${formatNum(netLeb)}` : '');
+  if (summaryEl) {
+    if (!anyEntityFilterSelected) {
+      summaryEl.textContent = '';
+    } else {
+      // Driver/contractor selection takes precedence over company for which profit
+      // figure is shown; company's own profit only shows when neither is selected.
+      let profitLabel = '', profitValue = 0, profitVisible = false, dueLabel = '';
+      if (driver) {
+        profitLabel = t('driverProfitLabel'); profitValue = driverProfitTotal; profitVisible = showDriverProfit;
+        dueLabel = t('driverDueLabel');
+      } else if (contractor) {
+        profitLabel = t('contractorProfitLabel'); profitValue = contractorProfitTotal; profitVisible = showContractorProfit;
+        dueLabel = t('contractorDueLabel');
+      } else if (company) {
+        profitLabel = t('profitF'); profitValue = totalProfit; profitVisible = showOurProfit;
+        dueLabel = t('companyDueLabel');
+      }
+      summaryEl.innerHTML = shipSummaryLineHTML({
+        totalDol, totalLeb, profitLabel, profitValue, profitVisible, dueLabel,
+        withdrawnDol, withdrawnLeb, withdrawnCount, totalLabel: `${esc(t('total'))} `
+      });
+    }
+  }
   if (totalEl)   totalEl.textContent   = `${t('showing')} ${ships.length} ${t('of')} ${(window._allShips || []).length} ${t('shipments')}`;
 
   if (tbody) {
-    const canEditCells = can('canEditShipments');
     tbody.innerHTML = ships.length
       ? ships.map(s => {
           const dbl = (field) => canEditCells ? `ondblclick="inlineEditCell(this,'${s.id}','${field}')" class="cell-editable" title="${t('dblClickToEdit')}"` : '';
@@ -746,7 +865,7 @@ function filterShipments() {
           <td ${dbl('shipNumber')}><span class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</span></td>
           <td>
             <div ${dbl('customerName')} style="font-weight:500;">${esc(s.customerName || '—')}</div>
-            <div ${dbl('customerPhone')} style="font-size:11px;color:var(--text-3);">${s.customerPhone ? esc(formatPhoneWithFlag(s.customerPhone)) : ''}</div>
+            <div ${dbl('customerPhone')} style="font-size:11px;color:var(--text-3);">${s.customerPhone ? phoneWithFlagHTML(s.customerPhone) : ''}</div>
           </td>
           <td ${dbl('customerAddress')} style="max-width:180px;white-space:normal;">${esc(s.customerAddress || '—')}</td>
           <td ${dbl('companyId')}>${esc(s.companyName    || '—')}</td>
@@ -754,9 +873,9 @@ function filterShipments() {
           <td ${dbl('contractorId')}>${esc(s.contractorName || '—')}</td>
           <td ${dbl('priceDollar')} class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
           <td ${dbl('priceLeb')} class="font-mono">${formatNum(s.priceLeb || 0)}</td>
-          ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>
-          <td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>
-          <td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
+          ${showOurProfit        ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
+          ${showDriverProfit     ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>` : ''}
+          ${showContractorProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
           <td ${dbl('status')}>${statusBadge(s.status)}</td>
           <td ${dbl('date')} style="color:var(--text-3);font-size:12px;">${fmtDate(s.date || s.createdAt)}</td>
           <td>
@@ -769,7 +888,7 @@ function filterShipments() {
           </td>
         </tr>`;
         }).join('')
-      : `<tr><td colspan="${(canEditCells ? 1 : 0) + (showProfit ? 14 : 11)}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
+      : `<tr><td colspan="${(canEditCells ? 1 : 0) + 11 + (showOurProfit?1:0) + (showDriverProfit?1:0) + (showContractorProfit?1:0)}" class="table-empty"><div class="empty-icon">📦</div><p>No shipments match your filters</p></td></tr>`;
   }
 
   updateShipSelectionUI();
@@ -968,7 +1087,8 @@ function inlineEditCell(el, id, field) {
   } else {
     const rawVal = s[field];
     const type = cfg.kind === 'date' ? 'date' : (cfg.kind === 'number' ? 'number' : 'text');
-    editorHTML = `<input type="${type}" ${cfg.step ? `step="${cfg.step}"` : ''} class="inline-edit-input form-input" value="${esc(rawVal ?? '')}">`;
+    const listAttr = field === 'customerAddress' ? 'list="known-addresses"' : '';
+    editorHTML = `<input type="${type}" ${cfg.step ? `step="${cfg.step}"` : ''} ${listAttr} class="inline-edit-input form-input" value="${esc(rawVal ?? '')}">`;
   }
 
   el.innerHTML = editorHTML;
@@ -1018,6 +1138,24 @@ function inlineEditCell(el, id, field) {
             saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, extra);
           },
           () => { el.innerHTML = prevHTML; } // cancelled — keep original status
+        );
+      } else if (field === 'driverId' && input.value && s.contractorId) {
+        settled = true;
+        const driverName = drivers_cache.find(d => d.id === input.value)?.name || '';
+        confirmAction(
+          t('convertToDriverTitle'),
+          t('convertToDriverMsg').replace('{name}', s.contractorName || '').replace('{new}', driverName),
+          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { contractorId: '', contractorName: '' }); },
+          () => { el.innerHTML = prevHTML; }
+        );
+      } else if (field === 'contractorId' && input.value && s.driverId) {
+        settled = true;
+        const contractorName = contractors_cache.find(c => c.id === input.value)?.name || '';
+        confirmAction(
+          t('convertToContractorTitle'),
+          t('convertToContractorMsg').replace('{name}', s.driverName || '').replace('{new}', contractorName),
+          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { driverId: '', driverName: '' }); },
+          () => { el.innerHTML = prevHTML; }
         );
       } else {
         finish(true);
@@ -1069,6 +1207,14 @@ function shipmentFormHTML(data) {
     `<option value="${s}" ${d.status === s ? 'selected' : ''}>${esc(t(STATUS_CONFIG[s].key))}</option>`
   ).join('');
 
+  /* Build order type options (عادي / تبديل) from ORDER_TYPE_CONFIG — only 2 real values,
+     no blank/"none" option; defaults to Normal when the shipment has none set yet
+     (new shipment, or an old one saved before this field existed). */
+  const currentOrderType = ALL_ORDER_TYPES.includes(d.orderType) ? d.orderType : 'Normal';
+  const orderTypeOptions = ALL_ORDER_TYPES.map(ot =>
+    `<option value="${ot}" ${currentOrderType === ot ? 'selected' : ''}>${esc(t(ORDER_TYPE_CONFIG[ot].key))}</option>`
+  ).join('');
+
   /* Show returned delivery cost row only when status is Returned-Paid; the withdrawn-order
      amount row is entirely separate and only shows for the Withdrawn status. */
   const isReturnedPaid = d.status === 'Returned-Paid';
@@ -1097,7 +1243,7 @@ function shipmentFormHTML(data) {
   </div>
   <div class="form-group">
     <label class="form-label">${t('address')}</label>
-    <input type="text" id="f-address" class="form-input" value="${esc(d.customerAddress || '')}" placeholder="${t('deliveryAddressPlaceholder')}">
+    <input type="text" id="f-address" class="form-input" list="known-addresses" value="${esc(d.customerAddress || '')}" placeholder="${t('deliveryAddressPlaceholder')}">
   </div>
   <div class="form-row">
     <div class="form-group">
@@ -1106,19 +1252,27 @@ function shipmentFormHTML(data) {
     </div>
     <div class="form-group">
       <label class="form-label">${t('contractor')}</label>
-      <select id="f-contractor" class="form-select" onchange="if(this.value){document.getElementById('f-driver').value='';}"><option value="">${t('noneOption')}</option>${contractorOptions}</select>
+      <select id="f-contractor" class="form-select" onchange="onContractorFieldChange(this)"><option value="">${t('noneOption')}</option>${contractorOptions}</select>
     </div>
   </div>
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('driver')}</label>
-      <select id="f-driver" class="form-select" onchange="if(this.value){document.getElementById('f-contractor').value='';}"><option value="">${t('noneOption')}</option>${driverOptions}</select>
+      <select id="f-driver" class="form-select" onchange="onDriverFieldChange(this)"><option value="">${t('noneOption')}</option>${driverOptions}</select>
     </div>
     <div class="form-group">
       <label class="form-label">${t('status')}</label>
       <select id="f-status" class="form-select" onchange="onStatusChange()">
         <option value="">${t('selectStatusOption')}</option>
         ${statusOptions}
+      </select>
+    </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group">
+      <label class="form-label">${t('orderTypeLabel')}</label>
+      <select id="f-ordertype" class="form-select">
+        ${orderTypeOptions}
       </select>
     </div>
   </div>
@@ -1196,6 +1350,42 @@ function onStatusChange() {
   if (costRow)   costRow.style.display   = status === 'Returned-Paid' ? 'block' : 'none';
 }
 
+/** Selecting a driver while the order was originally assigned to a contractor (still
+ *  showing that contractor in the form) warns the admin before converting it — same
+ *  in reverse for selecting a contractor while a driver was originally assigned. */
+function onDriverFieldChange(sel) {
+  const contractorSel = document.getElementById('f-contractor');
+  const orig = window._editShipmentOriginal;
+  const newDriverId = sel.value;
+  if (!newDriverId || !contractorSel.value || !orig || orig.contractorId !== contractorSel.value) {
+    if (newDriverId) contractorSel.value = '';
+    return;
+  }
+  const driverName = drivers_cache.find(d => d.id === newDriverId)?.name || '';
+  confirmAction(
+    t('convertToDriverTitle'),
+    t('convertToDriverMsg').replace('{name}', orig.contractorName || '').replace('{new}', driverName),
+    () => { contractorSel.value = ''; },
+    () => { sel.value = ''; }
+  );
+}
+function onContractorFieldChange(sel) {
+  const driverSel = document.getElementById('f-driver');
+  const orig = window._editShipmentOriginal;
+  const newContractorId = sel.value;
+  if (!newContractorId || !driverSel.value || !orig || orig.driverId !== driverSel.value) {
+    if (newContractorId) driverSel.value = '';
+    return;
+  }
+  const contractorName = contractors_cache.find(c => c.id === newContractorId)?.name || '';
+  confirmAction(
+    t('convertToContractorTitle'),
+    t('convertToContractorMsg').replace('{name}', orig.driverName || '').replace('{new}', contractorName),
+    () => { driverSel.value = ''; },
+    () => { sel.value = ''; }
+  );
+}
+
 // ===== SAVE SHIPMENT =====
 async function saveShipment() {
   const companyId    = document.getElementById('f-company')?.value;
@@ -1234,6 +1424,7 @@ async function saveShipment() {
     contractorId:          contractorId || '',
     contractorName:        contractorObj?.name  || '',
     status:                document.getElementById('f-status')?.value       || 'Pending',
+    orderType:             document.getElementById('f-ordertype')?.value    || 'Normal',
     priceDollar:           parseFloat(document.getElementById('f-pricedol')?.value)       || 0,
     priceLeb:              parseFloat(document.getElementById('f-priceleb')?.value)       || 0,
     driverDeliveryCost:    parseFloat(document.getElementById('f-drivercost')?.value)     || 0,
@@ -1288,10 +1479,11 @@ async function viewShipment(id) {
   <div class="detail-grid" style="margin-bottom:16px;">
     <div class="detail-field"><div class="detail-label">Ship Number</div><div class="detail-value font-mono" style="color:var(--brand-light);font-size:18px;font-weight:700;">#${s.shipNumber || '—'}</div></div>
     <div class="detail-field"><div class="detail-label">${t('status')}</div><div class="detail-value">${statusBadge(s.status)}</div></div>
+    <div class="detail-field"><div class="detail-label">${t('orderTypeLabel')}</div><div class="detail-value">${orderTypeBadge(s.orderType || 'Normal')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('date')}</div><div class="detail-value">${fmtDate(s.date || s.createdAt)}</div></div>
     <div class="detail-field"><div class="detail-label">${t('company')}</div><div class="detail-value">${esc(s.companyName || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('customer')}</div><div class="detail-value">${esc(s.customerName || '—')}</div></div>
-    <div class="detail-field"><div class="detail-label">${t('phone')}</div><div class="detail-value font-mono">${esc(formatPhoneWithFlag(s.customerPhone))}</div></div>
+    <div class="detail-field"><div class="detail-label">${t('phone')}</div><div class="detail-value font-mono">${phoneWithFlagHTML(s.customerPhone)}</div></div>
     <div class="detail-field" style="grid-column:1/-1;"><div class="detail-label">${t('address')}</div><div class="detail-value">${esc(s.customerAddress || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('driver')}</div><div class="detail-value">${esc(s.driverName || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('contractor')}</div><div class="detail-value">${esc(s.contractorName || '—')}</div></div>
@@ -1305,7 +1497,7 @@ async function viewShipment(id) {
     ${s.status === 'Withdrawn' ? `<div class="fin-item"><div class="fin-label" style="color:var(--amber);">↺ ${t('withdrawnAmountUSD')}</div><div class="fin-value negative">$${formatNum(s.withdrawnAmountDollar || 0)}</div></div>
     <div class="fin-item"><div class="fin-label" style="color:var(--amber);">↺ ${t('withdrawnAmountLL')}</div><div class="fin-value negative">${formatNum(s.withdrawnAmountLeb || 0)} LL</div></div>` : ''}
     ${s.status === 'Returned-Paid' ? `<div class="fin-item"><div class="fin-label" style="color:var(--purple);">${t('returnedDeliveryCost')}</div><div class="fin-value negative">$${formatNum(s.returnedDeliveryCost || 0)}</div></div>` : ''}
-    ${showProfit ? `<div class="fin-item"><div class="fin-label">${t('profitF')}</div><div class="fin-value positive">$${formatNum((s.deliveryProfit || 0) - (s.status === 'Returned-Paid' ? (s.returnedDeliveryCost || 0) : 0))}</div></div>` : ''}
+    ${showProfit ? `<div class="fin-item"><div class="fin-label">${t('profitF')}</div><div class="fin-value positive">$${formatNum(s.deliveryProfit || 0)}</div></div>` : ''}
   </div>
   ${s.description ? `<div style="background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;font-size:13px;color:var(--text-2);"><strong>Notes:</strong> ${esc(s.description)}</div>` : ''}`;
 
@@ -1325,6 +1517,7 @@ async function editShipment(id) {
     else s = (window._allShips || getDemoShipments()).find(x => x.id === id) || {};
   } catch (e) { s = (window._allShips || getDemoShipments()).find(x => x.id === id) || {}; }
   editingId = id;
+  window._editShipmentOriginal = s;
   document.getElementById('modal-shipment-title').textContent = `Edit Shipment #${s.shipNumber || id}`;
   document.getElementById('modal-shipment-body').innerHTML    = shipmentFormHTML(s);
   openModal('modal-shipment');
@@ -1332,9 +1525,20 @@ async function editShipment(id) {
 
 function openNewShipmentModal() {
   editingId = null;
+  window._editShipmentOriginal = null;
   document.getElementById('modal-shipment-title').textContent = t('newShipment');
   document.getElementById('modal-shipment-body').innerHTML    = shipmentFormHTML(null);
   openModal('modal-shipment');
+  // The address datalist is normally kept fresh by the Shipments page's live subscription;
+  // if this modal was opened from elsewhere (e.g. the header button from the Dashboard) and
+  // that subscription never ran this session, backfill it once in the background so address
+  // autocomplete still has suggestions instead of coming up empty.
+  if (!window._allShips || !window._allShips.length) {
+    fetchShipmentsFromDB().then(ships => {
+      if (!window._allShips || !window._allShips.length) window._allShips = ships;
+      refreshKnownAddressesDatalist();
+    }).catch(() => {});
+  }
 }
 
 async function deleteShipment(id) {
@@ -1421,9 +1625,25 @@ async function refreshArchiveData() {
     if (db) {
       const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(500).get();
       window._allArchShips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      backfillMissingOrderTypes('sonick_archive', window._allArchShips);
     }
   } catch (e) { /* keep whatever was already loaded */ }
   filterArchive();
+}
+
+/** Builds the Archive table's <thead> row — same rule as Shipments: "our profit" follows
+ *  the toggle, driver/contractor profit columns only show when that filter is set. */
+function archTheadRowHTML(canManage, showOurProfit, showDriverProfit, showContractorProfit) {
+  return `<tr>
+    ${canManage ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="arch-select-all" onchange="toggleSelectAllArchived(this)"></th>` : ''}
+    <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
+    <th>${t('driver')}</th><th>${t('contractor')}</th>
+    <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
+    ${showOurProfit        ? `<th>${t('profitCol')}</th>`             : ''}
+    ${showDriverProfit     ? `<th>${t('driverProfitCol')}</th>`       : ''}
+    ${showContractorProfit ? `<th>${t('contractorProfitCol')}</th>`   : ''}
+    <th>${t('status')}</th><th>${t('date')}</th><th>${t('archivedDateCol')}</th><th>${t('actions')}</th>
+  </tr>`;
 }
 
 async function renderArchive() {
@@ -1515,21 +1735,16 @@ async function renderArchive() {
       </div>
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportArchiveExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportArchivePDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
-      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
+      ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" id="arch-profit-toggle-btn" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
     </div>
     <div class="table-footer">
-      <span id="arch-summary" style="color:var(--text-2);font-family:var(--mono);"></span>
+      <span id="arch-summary" style="font-family:var(--mono);font-size:1rem;font-weight:600;"></span>
     </div>
     <div class="table-scroll">
-      <table>
-        <thead><tr>
-          ${canManage ? `<th style="width:36px;text-align:center;"><input type="checkbox" id="arch-select-all" onchange="toggleSelectAllArchived(this)"></th>` : ''}
-          <th>${t('shipNum')}</th><th>${t('customer')}</th><th>${t('address')}</th><th>${t('company')}</th>
-          <th>${t('driver')}</th><th>${t('contractor')}</th>
-          <th>${t('priceUSD')}</th><th>${t('priceLL')}</th>
-          ${showProfit ? `<th>${t('profitCol')}</th><th>${t('driverProfitCol')}</th><th>${t('contractorProfitCol')}</th>` : ''}
-          <th>${t('status')}</th><th>${t('date')}</th><th>${t('archivedDateCol')}</th><th>${t('actions')}</th>
-        </tr></thead>
+      <table id="arch-table">
+        <thead>
+          ${archTheadRowHTML(canManage, showProfit, false, false)}
+        </thead>
         <tbody id="arch-tbody"></tbody>
       </table>
     </div>
@@ -1607,18 +1822,55 @@ function filterArchive() {
 
   window._filteredArchShips = ships; // exact "searched rows" set for export/bulk actions
 
-  const showProfit = can('canViewProfit') && isProfitVisible();
+  const canSeeProfit         = can('canViewProfit');
+  const showOurProfit        = canSeeProfit && isProfitVisible();
+  const showDriverProfit     = canSeeProfit && !!driver;
+  const showContractorProfit = canSeeProfit && !!contractor;
   const canManage   = can('canArchive');
   const canDelete   = can('canDeleteShipments');
-  let totalDol = 0, totalLeb = 0, totalProfit = 0;
-  ships.forEach(s => { totalDol += s.priceDollar || 0; totalLeb += s.priceLeb || 0; totalProfit += s.deliveryProfit || 0; });
+  let totalDol = 0, totalLeb = 0, totalProfit = 0, driverProfitTotal = 0, contractorProfitTotal = 0;
+  ships.forEach(s => {
+    totalDol += shipTotalDollar(s);
+    totalLeb += shipTotalLeb(s);
+    if (isProfitEligible(s.status)) {
+      totalProfit          += s.deliveryProfit         || 0;
+      driverProfitTotal     += s.driverDeliveryCost      || 0;
+      contractorProfitTotal += s.contractorDeliveryCost  || 0;
+    }
+  });
+
+  const anyEntityFilterSelected = !!(company || driver || contractor);
 
   const countEl   = document.getElementById('arch-count');
   const summaryEl = document.getElementById('arch-summary');
   if (countEl)   countEl.textContent   = `${ships.length} ${t('archivedShipments')}`;
-  if (summaryEl) summaryEl.textContent = `$${formatNum(totalDol)} | L.L.${formatNum(totalLeb)}${showProfit ? ' | ' + t('profitF') + ': $' + formatNum(totalProfit) : ''}`;
+  if (summaryEl) {
+    if (!anyEntityFilterSelected) {
+      summaryEl.textContent = '';
+    } else {
+      let profitLabel = '', profitValue = 0, profitVisible = false, dueLabel = '';
+      if (driver) {
+        profitLabel = t('driverProfitLabel'); profitValue = driverProfitTotal; profitVisible = showDriverProfit;
+        dueLabel = t('driverDueLabel');
+      } else if (contractor) {
+        profitLabel = t('contractorProfitLabel'); profitValue = contractorProfitTotal; profitVisible = showContractorProfit;
+        dueLabel = t('contractorDueLabel');
+      } else if (company) {
+        profitLabel = t('profitF'); profitValue = totalProfit; profitVisible = showOurProfit;
+        dueLabel = t('companyDueLabel');
+      }
+      summaryEl.innerHTML = shipSummaryLineHTML({
+        totalDol, totalLeb, profitLabel, profitValue, profitVisible, dueLabel,
+        withdrawnDol: 0, withdrawnLeb: 0, withdrawnCount: 0
+      });
+    }
+  }
 
-  const colCount = (canManage ? 1 : 0) + (showProfit ? 14 : 11) + 1;
+  const thead = document.querySelector('#arch-table thead');
+  if (thead) thead.innerHTML = archTheadRowHTML(canManage, showOurProfit, showDriverProfit, showContractorProfit);
+
+  const colCount = (canManage ? 1 : 0) + 11 + (showOurProfit?1:0) + (showDriverProfit?1:0) + (showContractorProfit?1:0);
+
 
   const tbody  = document.getElementById('arch-tbody');
   const mobile = document.getElementById('arch-mobile');
@@ -1636,9 +1888,9 @@ function filterArchive() {
       <td>${esc(s.contractorName || '—')}</td>
       <td class="font-mono">$${formatNum(s.priceDollar || 0)}</td>
       <td class="font-mono">${formatNum(s.priceLeb || 0)}</td>
-      ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>
-      <td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>
-      <td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
+      ${showOurProfit        ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.deliveryProfit || 0)}</td>` : ''}
+      ${showDriverProfit     ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.driverDeliveryCost || 0)}</td>` : ''}
+      ${showContractorProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(s.contractorDeliveryCost || 0)}</td>` : ''}
       <td>${statusBadge(s.status)}</td>
       <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.date)}</td>
       <td style="color:var(--text-3);font-size:12px;">${fmtDate(s.archivedAt)}</td>
@@ -1826,6 +2078,7 @@ async function viewShipmentArchive(id) {
   <div class="detail-grid" style="margin-bottom:16px;">
     <div class="detail-field"><div class="detail-label">Ship #</div><div class="detail-value font-mono" style="color:var(--brand-light);font-size:18px;font-weight:700;">#${s.shipNumber || '—'}</div></div>
     <div class="detail-field"><div class="detail-label">${t('status')}</div><div class="detail-value">${statusBadge(s.status)}</div></div>
+    <div class="detail-field"><div class="detail-label">${t('orderTypeLabel')}</div><div class="detail-value">${orderTypeBadge(s.orderType || 'Normal')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('customer')}</div><div class="detail-value">${esc(s.customerName || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('company')}</div><div class="detail-value">${esc(s.companyName  || '—')}</div></div>
     <div class="detail-field"><div class="detail-label">${t('driver')}</div><div class="detail-value">${esc(s.driverName   || '—')}</div></div>
@@ -1987,6 +2240,61 @@ async function deletePayment(id) {
 }
 
 // ===================================================
+//  PER-ENTITY GENERAL REPORT POPUP (from Shipments page filters)
+// ===================================================
+/** Opens a modal showing the same figures as the General Report page's By Driver/By
+ *  Contractor/By Company table, but for just the single entity currently selected in the
+ *  Shipments page filters — computed from window._filteredShips, i.e. exactly the rows
+ *  currently shown on screen (respecting the date/status filters too, not just the entity). */
+function openEntityGeneralReport() {
+  const sel = window._entityReportSelection;
+  if (!sel) return;
+  const ships = window._filteredShips || [];
+  const showProfit = can('canViewProfit');
+
+  let count = 0, dol = 0, leb = 0, second = 0; // second = driver/contractor cost, or company profit
+  const statusCounts = {};
+  ships.forEach(s => {
+    const st = STATUS_CONFIG[s.status] ? s.status : 'Pending';
+    count++;
+    dol += shipTotalDollar(s);
+    leb += shipTotalLeb(s);
+    if (isProfitEligible(s.status)) {
+      if (sel.type === 'driver')          second += s.driverDeliveryCost      || 0;
+      else if (sel.type === 'contractor') second += s.contractorDeliveryCost  || 0;
+      else                                 second += s.deliveryProfit          || 0;
+    }
+    statusCounts[st] = (statusCounts[st] || 0) + 1;
+  });
+
+  const cols = sel.type === 'driver'
+    ? { entityLabel: t('driver'), income: t('driverIncomeCol'), profit: t('driverProfitCol'), due: t('driverTotalCol'), dueLeb: t('driverTotalColLeb') }
+    : sel.type === 'contractor'
+    ? { entityLabel: t('contractor'), income: t('contractorIncomeCol'), profit: t('contractorProfitCol'), due: t('contractorTotalCol'), dueLeb: t('contractorTotalColLeb') }
+    : { entityLabel: t('company'), income: t('companyOutcomeCol'), profit: t('companyProfitCol'), due: t('companyTotalCol'), dueLeb: t('companyTotalColLeb') };
+
+  document.getElementById('modal-entity-report-title').textContent = `${t('generalReportBtn')} — ${sel.name}`;
+  document.getElementById('modal-entity-report-body').innerHTML = `
+  <div class="table-container">
+    <table class="report-fit-table"><thead><tr>
+      <th>${cols.entityLabel}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${cols.income}</th>
+      ${showProfit ? `<th>${cols.profit}</th><th>${cols.due}</th>` : ''}
+      ${leb ? `<th>${cols.dueLeb}</th>` : ''}
+    </tr></thead><tbody>
+      <tr>
+        <td><strong>${esc(sel.name)}</strong></td>
+        <td class="font-mono">${count}</td>
+        <td>${statusBreakdownCell(statusCounts)}</td>
+        <td class="font-mono">$${formatNum(dol)}</td>
+        ${showProfit ? `<td class="font-mono" style="color:var(--green);">$${formatNum(second)}</td><td class="font-mono">$${formatNum(dol - second)}</td>` : ''}
+        ${leb ? `<td class="font-mono">${formatNum(leb)}</td>` : ''}
+      </tr>
+    </tbody></table>
+  </div>`;
+  openModal('modal-entity-report');
+}
+
+// ===================================================
 //  GENERAL REPORT
 // ===================================================
 async function renderGeneral() {
@@ -1999,69 +2307,111 @@ async function renderGeneral() {
 
   const byCompany = {}, byDriver = {}, byContractor = {};
   ships.forEach(s => {
+    const st = STATUS_CONFIG[s.status] ? s.status : 'Pending';
+    const dollarContribution = shipTotalDollar(s);
+    const lebContribution    = shipTotalLeb(s);
+    const profitEligible     = isProfitEligible(s.status);
+
     const ck = s.companyName || 'Unknown';
-    if (!byCompany[ck]) byCompany[ck] = { count: 0, dol: 0, leb: 0, profit: 0, delivered: 0 };
+    if (!byCompany[ck]) byCompany[ck] = { count: 0, dol: 0, leb: 0, profit: 0, delivered: 0, statusCounts: {} };
     byCompany[ck].count++;
-    byCompany[ck].dol    += s.priceDollar    || 0;
-    byCompany[ck].leb    += s.priceLeb       || 0;
-    byCompany[ck].profit += s.deliveryProfit || 0;
+    byCompany[ck].dol    += dollarContribution;
+    byCompany[ck].leb    += lebContribution;
+    if (profitEligible) byCompany[ck].profit += s.deliveryProfit || 0;
     if (s.status === 'Delivered') byCompany[ck].delivered++;
+    byCompany[ck].statusCounts[st] = (byCompany[ck].statusCounts[st] || 0) + 1;
 
     const dk = s.driverName || '—';
-    if (!byDriver[dk]) byDriver[dk] = { count: 0, dol: 0, cost: 0 };
-    byDriver[dk].count++; byDriver[dk].dol += s.priceDollar || 0; byDriver[dk].cost += s.driverDeliveryCost || 0;
+    if (!byDriver[dk]) byDriver[dk] = { count: 0, dol: 0, leb: 0, cost: 0, statusCounts: {} };
+    byDriver[dk].count++; byDriver[dk].dol += dollarContribution; byDriver[dk].leb += lebContribution;
+    if (profitEligible) byDriver[dk].cost += s.driverDeliveryCost || 0;
+    byDriver[dk].statusCounts[st] = (byDriver[dk].statusCounts[st] || 0) + 1;
 
     const ctk = s.contractorName || '—';
-    if (!byContractor[ctk]) byContractor[ctk] = { count: 0, dol: 0, cost: 0 };
-    byContractor[ctk].count++; byContractor[ctk].dol += s.priceDollar || 0; byContractor[ctk].cost += s.contractorDeliveryCost || 0;
+    if (!byContractor[ctk]) byContractor[ctk] = { count: 0, dol: 0, leb: 0, cost: 0, statusCounts: {} };
+    byContractor[ctk].count++; byContractor[ctk].dol += dollarContribution; byContractor[ctk].leb += lebContribution;
+    if (profitEligible) byContractor[ctk].cost += s.contractorDeliveryCost || 0;
+    byContractor[ctk].statusCounts[st] = (byContractor[ctk].statusCounts[st] || 0) + 1;
   });
 
+  // Lebanese Lira "amount due" figures only make sense for entities that actually have
+  // LL-priced orders — driver/contractor/company delivery costs are always tracked in $,
+  // so there's no LL cost to net out; the LL amount due is simply the LL revenue collected
+  // through that entity. Only show the LL columns per table when at least one entry has some.
+  const driverHasLeb     = Object.values(byDriver).some(v => v.leb);
+  const contractorHasLeb = Object.values(byContractor).some(v => v.leb);
+  const companyHasLeb    = Object.values(byCompany).some(v => v.leb);
+
   const showProfit = can('canViewProfit');
-  const totalDol   = ships.reduce((a, s) => a + (s.priceDollar    || 0), 0);
-  const totalLeb   = ships.reduce((a, s) => a + (s.priceLeb       || 0), 0);
-  const totalProfit= ships.reduce((a, s) => {
-    let p = a + (s.deliveryProfit || 0);
-    if (s.status === 'Returned-Paid') p -= (s.returnedDeliveryCost || 0);
-    return p;
-  }, 0);
+  const totalDol   = ships.reduce((a, s) => a + shipTotalDollar(s), 0);
+  const totalLeb   = ships.reduce((a, s) => a + shipTotalLeb(s), 0);
+  const companyProfit       = ships.reduce((a, s) => a + (isProfitEligible(s.status) ? (s.deliveryProfit || 0) : 0), 0);
+  const totalDriverCost     = ships.reduce((a, s) => a + (isProfitEligible(s.status) ? (s.driverDeliveryCost      || 0) : 0), 0);
+  const totalContractorCost = ships.reduce((a, s) => a + (isProfitEligible(s.status) ? (s.contractorDeliveryCost  || 0) : 0), 0);
+  const netProfit = companyProfit - totalDriverCost - totalContractorCost;
+
+  const sumRows = (entries) => {
+    const out = { count: 0, dol: 0, leb: 0, second: 0, statusCounts: {} };
+    entries.forEach(([, v]) => {
+      out.count += v.count;
+      out.dol   += v.dol;
+      out.leb   += v.leb || 0;
+      out.second += (v.cost !== undefined ? v.cost : v.profit) || 0;
+      Object.entries(v.statusCounts || {}).forEach(([st, n]) => { out.statusCounts[st] = (out.statusCounts[st] || 0) + n; });
+    });
+    return out;
+  };
+
+  // Income = the "Amount Due to Company" total (company revenue minus our profit share).
+  // Outcome = "Amount Due from Driver" + "Amount Due from Contractor" totals combined — the
+  // same figures already shown in the tables' footer rows below, just added together here.
+  const companySum    = sumRows(Object.entries(byCompany));
+  const driverSum      = sumRows(Object.entries(byDriver).filter(([k]) => k !== '—'));
+  const contractorSum  = sumRows(Object.entries(byContractor).filter(([k]) => k !== '—'));
+  const incomeDol  = companySum.dol - companySum.second;
+  const incomeLeb  = companySum.leb;
+  const outcomeDol = (driverSum.dol - driverSum.second) + (contractorSum.dol - contractorSum.second);
+  const outcomeLeb = driverSum.leb + contractorSum.leb;
 
   content.innerHTML = `
   ${pageHeader(t('generalReport'), [t('finance')])}
   <div class="stats-grid" style="margin-bottom:24px;">
     <div class="stat-card brand"><div class="stat-icon brand">${ICONS.package}</div><div class="stat-label">${t('totalShipments')}</div><div class="stat-value">${ships.length}</div></div>
-    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.dollarSign}</div><div class="stat-label">${t('revenue')}</div><div class="stat-value mono">$${formatNum(totalDol)}</div></div>
-    <div class="stat-card amber"><div class="stat-icon amber">${ICONS.landmark}</div><div class="stat-label">Total (L.L.)</div><div class="stat-value mono">${formatNum(Math.round(totalLeb / 1000000))}M</div></div>
-    ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('profit')}</div><div class="stat-value mono">$${formatNum(totalProfit)}</div></div>` : ''}
+    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.dollarSign}</div><div class="stat-label">${t('incomeDollar')}</div><div class="stat-value mono">$${formatNum(incomeDol)}</div></div>
+    <div class="stat-card amber"><div class="stat-icon amber">${ICONS.landmark}</div><div class="stat-label">${t('incomeLeb')}</div><div class="stat-value mono">${formatNum(incomeLeb / 1000000)}M</div></div>
+    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.send}</div><div class="stat-label">${t('outcomeDriversContractors')}</div><div class="stat-value mono">$${formatNum(outcomeDol)}</div></div>` : ''}
+    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.send}</div><div class="stat-label">${t('outcomeDriversContractorsLeb')}</div><div class="stat-value mono">${formatNum(outcomeLeb / 1000000)}M</div></div>` : ''}
+    ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('netProfit')}</div><div class="stat-value mono">$${formatNum(netProfit)}</div></div>` : ''}
   </div>
   <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;" class="report-grid">
     <div class="table-container">
       <div class="card-header"><span class="card-title">${t('byDriver')}</span></div>
       <div class="table-scroll">
-      <table><thead><tr><th>${t('driver')}</th><th>${t('count')}</th><th>${t('incomeCol')}</th>${showProfit?`<th>${t('profitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
+      <table><thead><tr><th>${t('driver')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('driverIncomeCol')}</th>${showProfit?`<th>${t('driverProfitCol')}</th><th>${t('driverTotalCol')}</th>`:''}${driverHasLeb?`<th>${t('driverTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byDriver).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
-        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}</tr>`).join('')
-        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
-      </tbody></table>
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td>${statusBreakdownCell(v.statusCounts)}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}${driverHasLeb?`<td class="font-mono">${v.leb?formatNum(v.leb):'—'}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${(showProfit?6:4)+(driverHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
+      </tbody>${(() => { const d = Object.entries(byDriver).filter(([k])=>k!=='—'); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${driverHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
     </div>
     <div class="table-container">
       <div class="card-header"><span class="card-title">${t('byContractor')}</span></div>
       <div class="table-scroll">
-      <table><thead><tr><th>${t('contractor')}</th><th>${t('count')}</th><th>${t('incomeCol')}</th>${showProfit?`<th>${t('profitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
+      <table><thead><tr><th>${t('contractor')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('contractorIncomeCol')}</th>${showProfit?`<th>${t('contractorProfitCol')}</th><th>${t('contractorTotalCol')}</th>`:''}${contractorHasLeb?`<th>${t('contractorTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byContractor).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
-        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}</tr>`).join('')
-        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
-      </tbody></table>
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td>${statusBreakdownCell(v.statusCounts)}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.cost)}</td><td class="font-mono">$${formatNum(v.dol - v.cost)}</td>`:''}${contractorHasLeb?`<td class="font-mono">${v.leb?formatNum(v.leb):'—'}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${(showProfit?6:4)+(contractorHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
+      </tbody>${(() => { const d = Object.entries(byContractor).filter(([k])=>k!=='—'); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${contractorHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
     </div>
     <div class="table-container">
       <div class="card-header"><span class="card-title">${t('byCompany')}</span></div>
       <div class="table-scroll">
-      <table><thead><tr><th>${t('company')}</th><th>${t('count')}</th><th>${t('outcomeCol')}</th>${showProfit?`<th>${t('ourProfitCol')}</th><th>${t('totalCol')}</th>`:''}</tr></thead><tbody>
+      <table><thead><tr><th>${t('company')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('companyOutcomeCol')}</th>${showProfit?`<th>${t('companyProfitCol')}</th><th>${t('companyTotalCol')}</th>`:''}${companyHasLeb?`<th>${t('companyTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byCompany).sort((a,b)=>b[1].dol-a[1].dol).map(([k,v])=>`
-        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.profit)}</td><td class="font-mono">$${formatNum(v.dol - v.profit)}</td>`:''}</tr>`).join('')
-        || `<tr><td colspan="${showProfit?5:3}" class="table-empty"><p>No data</p></td></tr>`}
-      </tbody></table>
+        <tr><td><strong>${esc(k)}</strong></td><td class="font-mono">${v.count}</td><td>${statusBreakdownCell(v.statusCounts)}</td><td class="font-mono">$${formatNum(v.dol)}</td>${showProfit?`<td class="font-mono" style="color:var(--green);">$${formatNum(v.profit)}</td><td class="font-mono">$${formatNum(v.dol - v.profit)}</td>`:''}${companyHasLeb?`<td class="font-mono">${v.leb?formatNum(v.leb):'—'}</td>`:''}</tr>`).join('')
+        || `<tr><td colspan="${(showProfit?6:4)+(companyHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
+      </tbody>${(() => { const d = Object.entries(byCompany); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${companyHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
     </div>
   </div>
@@ -2109,7 +2459,7 @@ function filterCompanies() {
   if (tbody) tbody.innerHTML = list.map(c => `
   <tr>
     <td><strong>${esc(c.name||'—')}</strong></td>
-    <td class="font-mono">${esc(formatPhoneWithFlag(c.phones))}</td>
+    <td class="font-mono">${phoneWithFlagHTML(c.phones)}</td>
     <td class="font-mono">$${formatNum(c.deliveryCost||0)}</td>
     <td><div style="display:flex;gap:4px;">
       <button class="btn btn-ghost  btn-sm btn-icon" onclick="editCompany('${c.id}')">✏️</button>
@@ -2121,7 +2471,7 @@ function filterCompanies() {
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🏢 ${esc(c.name||'—')}</span></div>
     <div class="mobile-card-body">
-      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(c.phones))}</div></div>
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${phoneWithFlagHTML(c.phones)}</div></div>
       <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(c.deliveryCost||0)}</div></div>
     </div>
     <div class="mobile-card-footer">
@@ -2210,7 +2560,7 @@ function filterContractors() {
   if (tbody) tbody.innerHTML = list.map(c => `
   <tr>
     <td><strong>${esc(c.name||'—')}</strong></td>
-    <td class="font-mono">${esc(formatPhoneWithFlag(c.phones))}</td>
+    <td class="font-mono">${phoneWithFlagHTML(c.phones)}</td>
     <td class="font-mono">$${formatNum(c.deliveryCost||0)}</td>
     <td><div style="display:flex;gap:4px;">
       <button class="btn btn-ghost  btn-sm btn-icon" onclick="editContractor('${c.id}')">✏️</button>
@@ -2222,7 +2572,7 @@ function filterContractors() {
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🤝 ${esc(c.name||'—')}</span></div>
     <div class="mobile-card-body">
-      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(c.phones))}</div></div>
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${phoneWithFlagHTML(c.phones)}</div></div>
       <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(c.deliveryCost||0)}</div></div>
     </div>
     <div class="mobile-card-footer">
@@ -2312,7 +2662,7 @@ function filterDrivers() {
   if (tbody) tbody.innerHTML = list.map(d => `
   <tr>
     <td><strong>${esc(d.name||'—')}</strong></td>
-    <td class="font-mono">${esc(formatPhoneWithFlag(d.phones))}</td>
+    <td class="font-mono">${phoneWithFlagHTML(d.phones)}</td>
     <td class="font-mono">$${formatNum(d.deliveryCost||0)}</td>
     <td>${d.active!==false ? `<span class="badge badge-green">${t('activeLabel')}</span>` : `<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</td>
     <td>${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</td>
@@ -2326,7 +2676,7 @@ function filterDrivers() {
   <div class="mobile-card">
     <div class="mobile-card-header"><span class="mobile-card-num">🚗 ${esc(d.name||'—')}</span>${d.active!==false?`<span class="badge badge-green">${t('activeLabel')}</span>`:`<span class="badge badge-gray">${t('inactiveLabel')}</span>`}</div>
     <div class="mobile-card-body">
-      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${esc(formatPhoneWithFlag(d.phones))}</div></div>
+      <div><div class="mobile-card-label">${t('phone')}</div><div class="mobile-card-value">${phoneWithFlagHTML(d.phones)}</div></div>
       <div><div class="mobile-card-label">${t('deliveryCostCol')}</div><div class="mobile-card-value">$${formatNum(d.deliveryCost||0)}</div></div>
       <div><div class="mobile-card-label">${t('portalColumnLabel')}</div><div class="mobile-card-value">${d.hasPortalAccess ? `<span class="badge badge-blue">${t('portalStatusEnabled')}</span>` : `<span class="badge badge-gray">${t('portalStatusDisabled')}</span>`}</div></div>
     </div>
@@ -2969,6 +3319,23 @@ async function renderBackup() {
         <button class="btn btn-secondary btn-sm" onclick="document.getElementById('restore-file-input').click()">${t('chooseBackupFile')}</button>
         <span id="restore-file-name" style="font-size:0.857rem;color:var(--text-3);">${t('noFileChosen')}</span>
       </div>
+      <div class="restore-mode-group" role="radiogroup" aria-label="${t('restoreModeTitle')}">
+        <div class="restore-mode-title">${t('restoreModeTitle')}</div>
+        <label class="restore-mode-option">
+          <input type="radio" name="restore-mode" value="merge" checked>
+          <div>
+            <div class="restore-mode-option-label">${t('restoreModeMerge')}</div>
+            <div class="restore-mode-option-desc">${t('restoreModeMergeDesc')}</div>
+          </div>
+        </label>
+        <label class="restore-mode-option">
+          <input type="radio" name="restore-mode" value="replace">
+          <div>
+            <div class="restore-mode-option-label">${t('restoreModeReplace')}</div>
+            <div class="restore-mode-option-desc">${t('restoreModeReplaceDesc')}</div>
+          </div>
+        </label>
+      </div>
       <div>
         <button class="btn btn-danger btn-sm" id="backup-restore-btn" onclick="confirmRestoreBackup()" disabled>
           <span class="icon-inline">${ICONS.upload}</span> ${t('restoreBtn')}
@@ -3043,25 +3410,63 @@ function handleBackupFileChosen(event) {
 
 function confirmRestoreBackup() {
   if (!_pendingRestoreData) { toast(t('invalidBackupFile'), 'error'); return; }
+  const mode = document.querySelector('input[name="restore-mode"]:checked')?.value || 'merge';
   const counts = Object.entries(_pendingRestoreData.collections)
     .map(([col, docs]) => `${col.replace('sonick_', '')}: ${docs.length}`)
     .join(' · ');
+  const warningMsg = mode === 'replace' ? t('restoreWarningMsgReplace') : t('restoreWarningMsgMerge');
   confirmAction(
     t('restoreWarningTitle'),
-    `${t('restoreWarningMsg')}\n\n${t('backupCollections')} — ${counts}`,
-    () => performRestore(_pendingRestoreData)
+    `${warningMsg}\n\n${t('backupCollections')} — ${counts}`,
+    () => performRestore(_pendingRestoreData, mode)
   );
 }
 
-async function performRestore(data) {
+async function performRestore(data, mode) {
   const restoreBtn = document.getElementById('backup-restore-btn');
   if (restoreBtn) { restoreBtn.disabled = true; restoreBtn.textContent = t('restoringData'); }
   try {
     for (const [col, docs] of Object.entries(data.collections)) {
-      if (!Array.isArray(docs) || !docs.length) continue;
+      if (!Array.isArray(docs)) continue;
+      // In merge mode an empty backup collection has nothing to add back, so skipping it
+      // is correct. In replace mode we must NOT skip it — an empty collection in the backup
+      // means "this should end up empty", so the wipe pass below still needs to run.
+      if (!docs.length && mode !== 'replace') continue;
+
+      let docsToWrite = docs;
+
+      if (mode === 'replace') {
+        // Wipe every current record in this collection first, so the end result matches
+        // the backup exactly — nothing left over from after the backup was taken.
+        //
+        // Exception: never delete the signed-in user's own sonick_users doc here. Deleting
+        // it (even briefly, mid-batch) revokes isAdmin() for the rest of the restore, since
+        // that check reads this same doc — so any further create/delete in this collection
+        // (including writing this doc back) gets denied and the restore dies mid-way. Their
+        // doc still gets rewritten below via the write pass; Firestore treats that as an
+        // update (self-update is always allowed) since we're leaving it in place rather than
+        // deleting first, so it never loses the permission it needs to complete.
+        const existingSnap = await db.collection(col).get();
+        const existingIds = existingSnap.docs
+          .map(d => d.id)
+          .filter(id => !(col === 'sonick_users' && currentUser && id === currentUser.uid));
+        for (let i = 0; i < existingIds.length; i += 400) {
+          const chunk = existingIds.slice(i, i + 400);
+          const batch = db.batch();
+          chunk.forEach(id => batch.delete(db.collection(col).doc(id)));
+          await batch.commit();
+        }
+      } else {
+        // Merge: keep everything currently in the database untouched, only add back
+        // records from the backup that no longer exist (by ID) — nothing is overwritten.
+        const existingSnap = await db.collection(col).get();
+        const existingIds = new Set(existingSnap.docs.map(d => d.id));
+        docsToWrite = docs.filter(entry => entry.id && !existingIds.has(entry.id));
+      }
+
       // Firestore batched writes are capped at 500 ops — chunk safely under that.
-      for (let i = 0; i < docs.length; i += 400) {
-        const chunk = docs.slice(i, i + 400);
+      for (let i = 0; i < docsToWrite.length; i += 400) {
+        const chunk = docsToWrite.slice(i, i + 400);
         const batch = db.batch();
         chunk.forEach(entry => {
           const { id, ...fields } = entry;

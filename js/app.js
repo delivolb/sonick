@@ -95,7 +95,9 @@ function initFirebase() {
 
 async function loadUserData(user) {
   try {
+    console.log('[DEBUG] looking up sonick_users/' + user.uid);
     const userDoc = await db.collection('sonick_users').doc(user.uid).get();
+    console.log('[DEBUG] doc.exists =', userDoc.exists, ' doc.data() =', userDoc.data());
     if (!userDoc.exists) {
       await auth.signOut();
       showLogin();
@@ -103,6 +105,7 @@ async function loadUserData(user) {
       return;
     }
     const data = userDoc.data();
+    console.log('[DEBUG] data.active =', data.active, ' typeof =', typeof data.active);
     if (!data.active) {
       await auth.signOut();
       showLogin();
