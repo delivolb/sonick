@@ -458,6 +458,15 @@ function statusBreakdownCell(counts) {
   return `<div class="status-breakdown-cell">${parts.join('') || '<span style="color:var(--text-3);">—</span>'}</div>`;
 }
 
+/** Same breakdown as statusBreakdownCell(), but as one plain-text line — for exports
+ *  (Excel cells / PDF table cells) where the badge markup doesn't apply. */
+function statusBreakdownText(counts) {
+  const parts = ALL_STATUSES
+    .filter(s => counts[s] > 0)
+    .map(s => `${t(STATUS_CONFIG[s].key)}: ${counts[s]}`);
+  return parts.join('  •  ') || '—';
+}
+
 function mobileShipCard(s) {
   return `
   <div class="mobile-card">
@@ -936,6 +945,433 @@ async function exportArchivePDF() {
   window._allShips = window._allArchShips || [];
   await exportPDF(`sonick-archive-${new Date().toISOString().slice(0, 10)}`);
   window._allShips = saved;
+}
+
+// ===== GENERAL REPORT EXPORT (Excel + PDF) =====
+// Unlike the Shipments/Archive exports (which dump raw per-order rows with configurable
+// columns), the General Report export mirrors the on-screen page itself: a KPI summary
+// plus the By Driver / By Contractor / By Company breakdown tables, styled to match each
+// section's on-screen accent color. Reads the data renderGeneral() stashes on
+// window._generalReportData (see js/pages.js) — the export can't recompute it itself since
+// it doesn't have direct DB access from here.
+
+const GENERAL_REPORT_COLORS = {
+  brand: 'FF4F6EF5', brandDark: 'FF3A54D6', blue: 'FF3DA9FC', amber: 'FFFFB020',
+  purple: 'FFB368FF', green: 'FF2ED47A', ink: 'FF1F2937', paleGray: 'FFF1F2F6',
+  rowAlt: 'FFF6F8FF',
+};
+
+/** Simple "just the filename" version of askExportOptions() — the General Report has no
+ *  configurable column set, so there's nothing to pick beyond a name. */
+function promptExportFilename(defaultName) {
+  return new Promise(resolve => {
+    promptInput(
+      { title: t('exportOptionsTitle'), message: t('exportOptionsFilenameLabel'), defaultValue: defaultName, placeholder: defaultName },
+      (val) => resolve(sanitizeFilename(val) || defaultName),
+      () => resolve(null)
+    );
+  });
+}
+
+/** One breakdown table's column plan — shared between the Excel sheet builder and the PDF
+ *  table builder so both stay in sync. `get` pulls the cell's raw value off an [name, v]
+ *  entry (or the pre-computed totals object); `fmt` drives number formatting in both exports. */
+function generalReportColumnDefs(opts) {
+  const { entityLabel, incomeLabel, profitLabel, totalLabel, totalLebLabel, showProfit, hasLeb } = opts;
+  const cols = [
+    { label: entityLabel,           fmt: 'text',   get: (name, v) => name },
+    { label: t('count'),            fmt: 'number', get: (name, v) => v.count },
+    { label: t('statusBreakdownCol'), fmt: 'text',  get: (name, v) => statusBreakdownText(v.statusCounts) },
+    { label: incomeLabel,           fmt: 'dollar', get: (name, v) => v.dol },
+  ];
+  if (showProfit) {
+    cols.push(
+      { label: profitLabel,         fmt: 'dollar', get: (name, v) => (v.cost !== undefined ? v.cost : v.profit) || 0 },
+      { label: totalLabel,          fmt: 'dollar', get: (name, v) => v.dol - ((v.cost !== undefined ? v.cost : v.profit) || 0) },
+    );
+  }
+  if (hasLeb) cols.push({ label: totalLebLabel, fmt: 'leb', get: (name, v) => v.leb || 0 });
+  return cols;
+}
+
+async function exportGeneralReportExcel() {
+  const data = window._generalReportData;
+  if (!data) { toast(t('noDataToExport'), 'info'); return; }
+
+  const suggested = `sonick-general-report-${new Date().toISOString().slice(0, 10)}`;
+  const filename = await promptExportFilename(suggested);
+  if (!filename) return; // cancelled
+
+  const {
+    totalShipments, showProfit,
+    byDriver, byContractor, byCompany,
+    driverHasLeb, contractorHasLeb, companyHasLeb,
+    driverSum, contractorSum, companySum,
+    incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+  } = data;
+  const C = GENERAL_REPORT_COLORS;
+  const isRTL = document.documentElement.dir === 'rtl';
+  const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Sonick Delivery System';
+  workbook.created = new Date();
+
+  // ---- Summary sheet: title band + a colored KPI card per stat ----
+  const summary = workbook.addWorksheet('Summary', { views: [{ rightToLeft: isRTL }] });
+  summary.mergeCells(1, 1, 1, 4);
+  const title = summary.getCell(1, 1);
+  title.value = '🚚  Sonick Delivery System — General Report';
+  title.font = { name: 'Calibri', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+  title.alignment = { vertical: 'middle', horizontal: 'center' };
+  title.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.brand } };
+  summary.getRow(1).height = 30;
+
+  summary.mergeCells(2, 1, 2, 4);
+  const sub = summary.getCell(2, 1);
+  sub.value = `Exported ${exportedOn}  •  ${totalShipments} shipment${totalShipments === 1 ? '' : 's'}`;
+  sub.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF6B7280' } };
+  sub.alignment = { vertical: 'middle', horizontal: 'center' };
+  sub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+  summary.getRow(2).height = 18;
+
+  const kpis = [
+    { label: t('totalShipments'), value: totalShipments, color: C.brand, fmt: 'number' },
+    { label: t('incomeDollar'),   value: incomeDol,       color: C.blue,  fmt: 'dollar' },
+    { label: t('incomeLeb'),      value: incomeLeb,       color: C.amber, fmt: 'leb' },
+  ];
+  if (showProfit) {
+    kpis.push(
+      { label: t('outcomeDriversContractors'),    value: outcomeDol, color: C.purple, fmt: 'dollar' },
+      { label: t('outcomeDriversContractorsLeb'), value: outcomeLeb, color: C.purple, fmt: 'leb' },
+      { label: t('netProfit'),                    value: netProfit,  color: C.green,  fmt: 'dollar' },
+    );
+  }
+
+  let r = 4;
+  kpis.forEach(k => {
+    const labelCell = summary.getCell(r, 1);
+    summary.mergeCells(r, 2, r, 4);
+    const valueCell = summary.getCell(r, 2);
+    labelCell.value = k.label;
+    labelCell.font  = { bold: true, color: { argb: 'FFFFFFFF' } };
+    labelCell.fill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: k.color } };
+    labelCell.alignment = { vertical: 'middle', horizontal: isRTL ? 'right' : 'left', indent: 1 };
+    valueCell.value = k.value;
+    valueCell.numFmt = k.fmt === 'dollar' ? '"$"#,##0.00' : (k.fmt === 'leb' ? '#,##0 "L.L."' : '#,##0');
+    valueCell.font = { bold: true, size: 13, color: { argb: C.ink } };
+    valueCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+    valueCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    summary.getRow(r).height = 24;
+    r++;
+  });
+  summary.columns = [{ width: 22 }, { width: 16 }, { width: 16 }, { width: 16 }];
+
+  // ---- One sheet per breakdown table ----
+  const buildSheet = (name, entries, sum, opts) => {
+    const cols = generalReportColumnDefs({ ...opts, showProfit });
+    const colCount = cols.length;
+    const sheet = workbook.addWorksheet(name, { views: [{ state: 'frozen', ySplit: 3, rightToLeft: isRTL }] });
+
+    sheet.mergeCells(1, 1, 1, colCount);
+    const t1 = sheet.getCell(1, 1);
+    t1.value = `🚚  Sonick Delivery System — ${name}`;
+    t1.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+    t1.alignment = { vertical: 'middle', horizontal: 'center' };
+    t1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.accentColor } };
+    sheet.getRow(1).height = 28;
+
+    sheet.mergeCells(2, 1, 2, colCount);
+    const t2 = sheet.getCell(2, 1);
+    t2.value = `Exported ${exportedOn}  •  ${entries.length} row${entries.length === 1 ? '' : 's'}`;
+    t2.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF6B7280' } };
+    t2.alignment = { vertical: 'middle', horizontal: 'center' };
+    t2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+    sheet.getRow(2).height = 18;
+
+    const headerRow = sheet.getRow(3);
+    cols.forEach((c, i) => { headerRow.getCell(i + 1).value = c.label; });
+    headerRow.eachCell(cell => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.brandDark } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF2A3FA0' } }, bottom: { style: 'thin', color: { argb: 'FF2A3FA0' } },
+        left: { style: 'thin', color: { argb: 'FF2A3FA0' } }, right: { style: 'thin', color: { argb: 'FF2A3FA0' } },
+      };
+    });
+    headerRow.height = 22;
+    sheet.columns = cols.map((c, i) => ({ width: i === 0 ? 22 : (c.fmt === 'text' ? 40 : 15) }));
+
+    entries.forEach(([name, v], idx) => {
+      const rowArray = cols.map(c => c.get(name, v));
+      const row = sheet.addRow(rowArray);
+      const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : C.rowAlt;
+      row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        const c = cols[colNum - 1];
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bandColor } };
+        cell.alignment = { horizontal: c.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle', wrapText: c.fmt === 'text' };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE4E8F5' } }, bottom: { style: 'thin', color: { argb: 'FFE4E8F5' } },
+          left: { style: 'thin', color: { argb: 'FFE4E8F5' } }, right: { style: 'thin', color: { argb: 'FFE4E8F5' } },
+        };
+        if (c.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+        if (c.fmt === 'leb')    cell.numFmt = '#,##0';
+        if (colNum === 1)       cell.font = { bold: true };
+      });
+    });
+
+    const totalRow = sheet.addRow(cols.map((c, i) => i === 0 ? `${t('total')} (${entries.length})` : c.get('', sum)));
+    totalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      const c = cols[colNum - 1];
+      cell.font = { bold: true, color: { argb: C.ink } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EDFF' } };
+      cell.alignment = { horizontal: c.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+      cell.border = {
+        top: { style: 'medium', color: { argb: opts.accentColor } }, bottom: { style: 'thin', color: { argb: opts.accentColor } },
+        left: { style: 'thin', color: { argb: opts.accentColor } }, right: { style: 'thin', color: { argb: opts.accentColor } },
+      };
+      if (c.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+      if (c.fmt === 'leb')    cell.numFmt = '#,##0';
+    });
+    totalRow.height = 20;
+    sheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: colCount } };
+  };
+
+  buildSheet('By Driver',
+    Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), driverSum,
+    { entityLabel: t('driver'), incomeLabel: t('driverIncomeCol'), profitLabel: t('driverProfitCol'), totalLabel: t('driverTotalCol'), totalLebLabel: t('driverTotalColLeb'), hasLeb: driverHasLeb, accentColor: C.blue });
+  buildSheet('By Contractor',
+    Object.entries(byContractor).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), contractorSum,
+    { entityLabel: t('contractor'), incomeLabel: t('contractorIncomeCol'), profitLabel: t('contractorProfitCol'), totalLabel: t('contractorTotalCol'), totalLebLabel: t('contractorTotalColLeb'), hasLeb: contractorHasLeb, accentColor: C.purple });
+  buildSheet('By Company',
+    Object.entries(byCompany).sort((a, b) => b[1].dol - a[1].dol), companySum,
+    { entityLabel: t('company'), incomeLabel: t('companyOutcomeCol'), profitLabel: t('companyProfitCol'), totalLabel: t('companyTotalCol'), totalLebLabel: t('companyTotalColLeb'), hasLeb: companyHasLeb, accentColor: C.green });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${filename}.xlsx`; a.click();
+  URL.revokeObjectURL(url);
+  toast(t('excelExported'), 'success');
+}
+
+async function exportGeneralReportPDF() {
+  if (!window.jspdf || !window.html2canvas) { toast(t('pdfLibMissing'), 'error'); return; }
+  const data = window._generalReportData;
+  if (!data) { toast(t('noDataToExport'), 'info'); return; }
+
+  const suggested = `sonick-general-report-${new Date().toISOString().slice(0, 10)}`;
+  const filename = await promptExportFilename(suggested);
+  if (!filename) return; // cancelled
+
+  toast(t('generatingPdf'), 'info');
+
+  const {
+    totalShipments, showProfit,
+    byDriver, byContractor, byCompany,
+    driverHasLeb, contractorHasLeb, companyHasLeb,
+    driverSum, contractorSum, companySum,
+    incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+  } = data;
+  const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const isRTL = document.documentElement.dir === 'rtl';
+
+  // html2canvas cannot be trusted to rasterize Arabic text correctly — it drops/garbles
+  // letters (most visibly "ال" sequences) no matter what Unicode control characters or CSS
+  // direction hints are added, because the corruption happens in html2canvas's own custom
+  // text-shaping code, not in anything we control. The reliable fix is to never let
+  // html2canvas draw Arabic text at all: every Arabic-bearing label below is instead
+  // pre-rendered to a small PNG using the browser's own (correct) canvas 2D text engine,
+  // then embedded as a plain <img> — which html2canvas only has to copy pixel-for-pixel,
+  // no text shaping involved. Latin/numeric text (amounts, "$", dates) is unaffected by the
+  // bug and stays as normal HTML text.
+  const textImgCache = new Map();
+  function textImg(text, { fontSize = 12, weight = 400, color = '#1F2937', maxWidth = null, align = 'center' } = {}) {
+    const str = String(text ?? '').trim() || '\u00A0';
+    const cacheKey = `${str}|${fontSize}|${weight}|${color}|${maxWidth}|${align}`;
+    if (textImgCache.has(cacheKey)) return textImgCache.get(cacheKey);
+
+    const scale = 3;
+    const fontFamily = "'Segoe UI', Tahoma, Arial, sans-serif";
+    const measure = document.createElement('canvas').getContext('2d');
+    measure.font = `${weight} ${fontSize}px ${fontFamily}`;
+
+    // Greedy word-wrap against maxWidth (only meaningful for RTL/Arabic strings here,
+    // which wrap on spaces same as any other script).
+    let lines = [str];
+    if (maxWidth) {
+      const words = str.split(' ');
+      lines = [];
+      let cur = '';
+      words.forEach(w => {
+        const attempt = cur ? cur + ' ' + w : w;
+        if (cur && measure.measureText(attempt).width > maxWidth) { lines.push(cur); cur = w; }
+        else cur = attempt;
+      });
+      if (cur) lines.push(cur);
+      if (!lines.length) lines = [str];
+    }
+
+    const lineHeight = Math.ceil(fontSize * 1.4);
+    const contentWidth  = maxWidth || Math.max(1, ...lines.map(l => measure.measureText(l).width));
+    const width  = Math.ceil(contentWidth) + 6;
+    const height = lineHeight * lines.length + 4;
+
+    const canvas = document.createElement('canvas');
+    canvas.width  = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.font = `${weight} ${fontSize}px ${fontFamily}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.direction = isRTL ? 'rtl' : 'ltr';
+    ctx.textAlign = align;
+    const xPos = align === 'center' ? width / 2 : (align === 'right' ? width - 3 : 3);
+    lines.forEach((line, i) => ctx.fillText(line, xPos, lineHeight * (i + 0.5) + 2));
+
+    const result = { html: `<img src="${canvas.toDataURL('image/png')}" style="display:inline-block;width:${width}px;height:${height}px;vertical-align:middle;">`, width, height };
+    textImgCache.set(cacheKey, result);
+    return result;
+  }
+  // Arabic-labeled text (headers, titles, entity names, status text) always goes through
+  // textImg(); plain numeric/currency text stays as regular HTML since it isn't affected.
+  const arabicHTML = (text, opts) => textImg(text, opts).html;
+
+  let logoDataUrl = '';
+  try { logoDataUrl = await imageToDataURL('assets/logo-mark.png'); } catch (e) { /* logo optional */ }
+
+  const kpiCardHTML = (label, value, color, fmt) => `
+    <div style="flex:1;min-width:130px;background:${color};border-radius:10px;padding:12px 14px;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.12);">
+      <div style="margin-bottom:4px;">${arabicHTML(label, { fontSize: 10, weight: 600, color: '#ffffff', align: 'center' })}</div>
+      <div style="font-size:18px;font-weight:800;">${fmt === 'dollar' ? '$' + formatNum(value) : (fmt === 'leb' ? arabicHTML(formatLebStat(value), { fontSize: 15, weight: 800, color: '#ffffff', align: 'center' }) : formatNum(value))}</div>
+    </div>`;
+
+  const kpis = [
+    kpiCardHTML(t('totalShipments'), totalShipments, '#4F6EF5', 'number'),
+    kpiCardHTML(t('incomeDollar'), incomeDol, '#3DA9FC', 'dollar'),
+    kpiCardHTML(t('incomeLeb'), incomeLeb, '#FFB020', 'leb'),
+  ];
+  if (showProfit) {
+    kpis.push(
+      kpiCardHTML(t('outcomeDriversContractors'), outcomeDol, '#B368FF', 'dollar'),
+      kpiCardHTML(t('outcomeDriversContractorsLeb'), outcomeLeb, '#B368FF', 'leb'),
+      kpiCardHTML(t('netProfit'), netProfit, '#2ED47A', 'dollar'),
+    );
+  }
+
+  // Usable pixel width per column, used to size each header/cell text image's word-wrap —
+  // computed once the actual column percentages are known (see tableHTML below).
+  const REPORT_WIDTH = 1500, REPORT_PAD = 34 * 2;
+
+  const tableHTML = (title, entries, sum, opts) => {
+    const cols = generalReportColumnDefs({ ...opts, showProfit });
+    // Column widths as percentages: entity name and status breakdown get generous room
+    // for the (often long) Arabic phrases, remaining width split evenly across the
+    // numeric $/L.L. columns.
+    const fixedPct = { text0: 15, count: 7, status: 28 };
+    const numericCols = cols.length - 3;
+    const numericPct = numericCols > 0 ? (100 - fixedPct.text0 - fixedPct.count - fixedPct.status) / numericCols : 0;
+    const colWidths = cols.map((c, i) => i === 0 ? fixedPct.text0 : i === 1 ? fixedPct.count : i === 2 ? fixedPct.status : numericPct);
+    const colgroup = `<colgroup>${colWidths.map(w => `<col style="width:${w}%;">`).join('')}</colgroup>`;
+    const usableWidth = REPORT_WIDTH - REPORT_PAD;
+    const colPxWidth = colWidths.map(w => Math.floor(usableWidth * (w / 100)) - 16); // minus cell padding/border
+    const cellStyle = (fmt, extra) => `padding:6px 5px;border:1px solid #B8C2D9;text-align:${fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center'};color:#1F2937;${extra || ''}`;
+
+    const rows = entries.map(([name, v], idx) => {
+      const cells = cols.map((c, i) => {
+        const val = c.get(name, v);
+        const disp = c.fmt === 'dollar' ? '$' + formatNum(val)
+                   : c.fmt === 'leb'    ? formatNum(val)
+                   : arabicHTML(val, { fontSize: 10.5, weight: i === 0 ? 700 : 400, color: '#1F2937', maxWidth: colPxWidth[i], align: isRTL ? 'right' : 'left' });
+        return `<td style="${cellStyle(c.fmt)}">${disp}</td>`;
+      }).join('');
+      return `<tr style="background:${idx % 2 === 0 ? '#ffffff' : '#F6F8FF'};">${cells}</tr>`;
+    }).join('');
+    const totalCells = cols.map((c, i) => {
+      const val = i === 0 ? `${t('total')} (${entries.length})` : c.get('', sum);
+      const disp = i === 0 ? arabicHTML(val, { fontSize: 10.5, weight: 700, color: '#1F2937', maxWidth: colPxWidth[i], align: isRTL ? 'right' : 'left' })
+                 : c.fmt === 'dollar' ? '$' + formatNum(val)
+                 : c.fmt === 'leb'    ? formatNum(val)
+                 : arabicHTML(val, { fontSize: 10.5, weight: 700, color: '#1F2937', maxWidth: colPxWidth[i], align: isRTL ? 'right' : 'left' });
+      return `<td style="${cellStyle(c.fmt, `border-color:${opts.accentColor};font-weight:700;`)}">${disp}</td>`;
+    }).join('');
+    return `
+    <div style="margin-top:18px;" dir="${isRTL ? 'rtl' : 'ltr'}">
+      <div style="background:${opts.accentColor};padding:8px 12px;border-radius:8px 8px 0 0;">${arabicHTML(title, { fontSize: 13, weight: 700, color: '#ffffff', align: 'center' })}</div>
+      <table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:10px;" dir="${isRTL ? 'rtl' : 'ltr'}">
+        ${colgroup}
+        <thead><tr style="background:#3A54D6;">${cols.map((c, i) => `<th style="padding:7px 4px;border:1px solid #2A3FA0;text-align:center;">${arabicHTML(c.label, { fontSize: 10.5, weight: 700, color: '#ffffff', maxWidth: colPxWidth[i], align: 'center' })}</th>`).join('')}</tr></thead>
+        <tbody>${rows || `<tr><td colspan="${cols.length}" style="padding:14px;text-align:center;color:#9CA3AF;">No data</td></tr>`}</tbody>
+        <tfoot><tr style="background:#E9EDFF;">${totalCells}</tr></tfoot>
+      </table>
+    </div>`;
+  };
+
+  const reportHTML = `
+    <div id="pdf-general-report-root" dir="${isRTL ? 'rtl' : 'ltr'}" style="direction:${isRTL ? 'rtl' : 'ltr'};width:${REPORT_WIDTH}px;background:#ffffff;font-family:'Calibri','Segoe UI',Arial,sans-serif;color:#1F2937;padding:30px 34px;">
+      <div style="display:flex;align-items:center;gap:16px;border-bottom:3px solid #4F6EF5;padding-bottom:16px;margin-bottom:16px;">
+        ${logoDataUrl ? `<img src="${logoDataUrl}" style="width:52px;height:52px;object-fit:contain;">` : ''}
+        <div>
+          <div style="font-size:23px;font-weight:800;color:#1F2937;">Sonick Delivery System</div>
+          <div>${arabicHTML(t('generalReport'), { fontSize: 13, weight: 400, color: '#6B7280', align: isRTL ? 'right' : 'left' })}</div>
+        </div>
+        <div style="margin-${isRTL ? 'right' : 'left'}:auto;text-align:${isRTL ? 'left' : 'right'};line-height:1.8;">
+          <div>${arabicHTML(`${t('pdfExportedOn')} ${exportedOn}`, { fontSize: 12, weight: 400, color: '#6B7280', align: isRTL ? 'left' : 'right' })}</div>
+          <div>${arabicHTML(`${totalShipments} ${t('shipments')}`, { fontSize: 12, weight: 400, color: '#6B7280', align: isRTL ? 'left' : 'right' })}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">${kpis.join('')}</div>
+      ${tableHTML(t('byDriver'), Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), driverSum,
+        { entityLabel: t('driver'), incomeLabel: t('driverIncomeCol'), profitLabel: t('driverProfitCol'), totalLabel: t('driverTotalCol'), totalLebLabel: t('driverTotalColLeb'), hasLeb: driverHasLeb, accentColor: '#3DA9FC' })}
+      ${tableHTML(t('byContractor'), Object.entries(byContractor).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), contractorSum,
+        { entityLabel: t('contractor'), incomeLabel: t('contractorIncomeCol'), profitLabel: t('contractorProfitCol'), totalLabel: t('contractorTotalCol'), totalLebLabel: t('contractorTotalColLeb'), hasLeb: contractorHasLeb, accentColor: '#B368FF' })}
+      ${tableHTML(t('byCompany'), Object.entries(byCompany).sort((a, b) => b[1].dol - a[1].dol), companySum,
+        { entityLabel: t('company'), incomeLabel: t('companyOutcomeCol'), profitLabel: t('companyProfitCol'), totalLabel: t('companyTotalCol'), totalLebLabel: t('companyTotalColLeb'), hasLeb: companyHasLeb, accentColor: '#2ED47A' })}
+    </div>`;
+
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-10000px;top:0;';
+  container.innerHTML = reportHTML;
+  document.body.appendChild(container);
+
+  try {
+    const target = container.querySelector('#pdf-general-report-root');
+    const canvas = await html2canvas(target, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pageWidth  = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth   = pageWidth;
+    const imgHeight  = canvas.height * (imgWidth / canvas.width);
+    const imgData    = canvas.toDataURL('image/png');
+
+    let heightLeft = imgHeight, position = 0;
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+
+    const totalPages = pdf.internal.getNumberOfPages();
+    for (let i = 1; i <= totalPages; i++) {
+      pdf.setPage(i);
+      pdf.setFontSize(8);
+      pdf.setTextColor(150);
+      pdf.text(`${i} / ${totalPages}`, pageWidth - 50, pageHeight - 14);
+    }
+
+    pdf.save(`${filename}.pdf`);
+    toast(t('pdfExported'), 'success');
+  } finally {
+    document.body.removeChild(container);
+  }
 }
 
 // ===== KEYBOARD SHORTCUTS =====

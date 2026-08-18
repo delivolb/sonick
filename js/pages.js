@@ -261,6 +261,10 @@ async function renderShipments() {
   ${pageHeader(t('shipments'), [t('operations')])}
   <div class="toolbar">
   <div class="filter-bar">
+    <select class="filter-select" id="ship-ordertype-filter" onchange="filterShipments()">
+      <option value="">${t('allOrderTypes')}</option>
+      ${ALL_ORDER_TYPES.map(ot => `<option value="${ot}">${esc(t(ORDER_TYPE_CONFIG[ot].key))}</option>`).join('')}
+    </select>
     <div class="dropdown" id="ship-status-dropdown">
       <button type="button" class="filter-select" onclick="toggleDropdown('ship-status-dropdown')">
         <span id="ship-status-filter-label">${t('allStatuses')}</span>
@@ -287,14 +291,6 @@ async function renderShipments() {
     </select>
     <input type="date" class="filter-date" id="ship-date-from" onchange="filterShipments()" title="From date">
     <input type="date" class="filter-date" id="ship-date-to"   onchange="filterShipments()" title="To date">
-    <div class="table-search">
-      <span class="search-icon">📞</span>
-      <input type="text" placeholder="${t('searchByPhone')}" id="ship-phone-search" oninput="filterShipments()">
-    </div>
-    <div class="table-search">
-      <span class="search-icon">🔍</span>
-      <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()">
-    </div>
     <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="resetShipmentFilters()" title="${t('resetFilters')}">${ICONS.refreshCcw}</button>
   </div>
   </div>
@@ -334,6 +330,12 @@ async function renderShipments() {
         <label class="form-label">${t('descriptionNotesLabel')}</label>
         <input type="text" id="fo-desc" class="form-input" placeholder="${t('descPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
+      <div class="form-group fo-f-ordertype" style="margin-bottom:0;min-width:110px;">
+        <label class="form-label">${t('orderTypeLabel')}</label>
+        <select id="fo-ordertype" class="form-select">
+          ${ALL_ORDER_TYPES.map(ot => `<option value="${ot}" ${ot === 'Normal' ? 'selected' : ''}>${esc(t(ORDER_TYPE_CONFIG[ot].key))}</option>`).join('')}
+        </select>
+      </div>
       <button class="btn btn-quick-add btn-sm fo-submit-btn" onclick="quickAddOrder()" style="height:38px;white-space:nowrap;">+ ${t('newShipment')}</button>
     </div>
   </div>` : ''}
@@ -371,6 +373,14 @@ async function renderShipments() {
       ${can('canArchive')  ? `<button class="btn btn-secondary btn-sm" onclick="archiveFilteredShipments()">${t('archiveGroupBtn')}</button>` : ''}
       <button class="btn btn-secondary btn-sm" id="ship-entity-report-btn" style="display:none;" onclick="openEntityGeneralReport()">${ICONS.trendingUp} ${t('generalReportBtn')}</button>
       ${canSeeProfit ? `<button class="btn btn-secondary btn-sm" id="ship-profit-toggle-btn" onclick="toggleProfitVisibility()">${isProfitVisible() ? '🙈 ' + t('hideProfitBtn') : '👁 ' + t('showProfitBtn')}</button>` : ''}
+      <div class="table-search">
+        <span class="search-icon">📞</span>
+        <input type="text" placeholder="${t('searchByPhone')}" id="ship-phone-search" oninput="filterShipments()">
+      </div>
+      <div class="table-search">
+        <span class="search-icon">🔍</span>
+        <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()">
+      </div>
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
     </div>
@@ -462,8 +472,8 @@ function updateOrderEntryBars(companyName, driverName, contractorName) {
 
   if (showBulk) {
     window._bulkAssignFixed = {
-      driverId: driverObj?.id || '',         driverName: driverObj?.name || '',
-      contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '',
+      driverId: driverObj?.id || '',         driverName: driverObj?.name || '',         driverDeliveryCost:     driverObj?.deliveryCost      || 0,
+      contractorId: contractorObj?.id || '', contractorName: contractorObj?.name || '', contractorDeliveryCost: contractorObj?.deliveryCost  || 0,
     };
 
     const badges = document.getElementById('bulk-assign-badges');
@@ -546,6 +556,7 @@ async function quickAddOrder() {
     withdrawnAmountDollar:  isWithdrawn ? priceDollar : 0,
     withdrawnAmountLeb:     isWithdrawn ? priceLeb    : 0,
     description:            document.getElementById('fo-desc')?.value?.trim() || '',
+    orderType:              ALL_ORDER_TYPES.includes(document.getElementById('fo-ordertype')?.value) ? document.getElementById('fo-ordertype').value : 'Normal',
     createdAt:              firebase.firestore.FieldValue.serverTimestamp(),
     createdBy:              currentUserData?.id || '',
     updatedAt:              firebase.firestore.FieldValue.serverTimestamp(),
@@ -562,6 +573,7 @@ async function quickAddOrder() {
     document.getElementById('fo-priceleb').value  = '';
     document.getElementById('fo-address').value   = '';
     document.getElementById('fo-desc').value      = '';
+    document.getElementById('fo-ordertype').value = 'Normal';
     await refreshShipmentsData();
     document.getElementById('fo-shipnum')?.focus();
   } catch (e) {
@@ -594,9 +606,11 @@ async function bulkAssignOrders() {
 
   const updates = {};
   // Assigning a driver clears any existing contractor on that order, and vice versa —
-  // the two are mutually exclusive, so the payload always states both explicitly.
-  if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName;     updates.contractorId = ''; updates.contractorName = ''; }
-  if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; updates.driverId     = ''; updates.driverName     = ''; }
+  // the two are mutually exclusive, so the payload always states both explicitly. Each
+  // side's delivery cost is set from the assigned driver's/contractor's own stored cost,
+  // and the opposite side's cost is zeroed out along with its id/name.
+  if (fixed.driverId)     { updates.driverId     = fixed.driverId;     updates.driverName     = fixed.driverName;     updates.driverDeliveryCost     = fixed.driverDeliveryCost;     updates.contractorId = ''; updates.contractorName = ''; updates.contractorDeliveryCost = 0; }
+  if (fixed.contractorId) { updates.contractorId = fixed.contractorId; updates.contractorName = fixed.contractorName; updates.contractorDeliveryCost = fixed.contractorDeliveryCost; updates.driverId     = ''; updates.driverName     = ''; updates.driverDeliveryCost     = 0; }
 
   const allShips = window._allShips || [];
   const matched  = [];
@@ -758,6 +772,7 @@ function filterShipments() {
   const company    =  document.getElementById('ship-company-filter')?.value     || '';
   const driver     =  document.getElementById('ship-driver-filter')?.value      || '';
   const contractor =  document.getElementById('ship-contractor-filter')?.value  || '';
+  const orderType  =  document.getElementById('ship-ordertype-filter')?.value   || '';
   const dateFrom   =  document.getElementById('ship-date-from')?.value          || '';
   const dateTo     =  document.getElementById('ship-date-to')?.value            || '';
 
@@ -779,6 +794,7 @@ function filterShipments() {
     if (company     && s.companyName    !== company)     return false;
     if (driver      && s.driverName     !== driver)      return false;
     if (contractor  && s.contractorName !== contractor)  return false;
+    if (orderType   && (s.orderType || 'Normal') !== orderType) return false;
     if (dateFrom && s.date < dateFrom) return false;
     if (dateTo   && s.date > dateTo)   return false;
     return true;
@@ -906,11 +922,13 @@ function resetShipmentFilters() {
   const company    = document.getElementById('ship-company-filter');
   const driver     = document.getElementById('ship-driver-filter');
   const contractor = document.getElementById('ship-contractor-filter');
+  const orderType  = document.getElementById('ship-ordertype-filter');
   const dateFrom   = document.getElementById('ship-date-from');
   const dateTo     = document.getElementById('ship-date-to');
   if (company)    company.value    = '';
   if (driver)     driver.value     = '';
   if (contractor) contractor.value = '';
+  if (orderType)  orderType.value  = '';
   if (dateFrom)   dateFrom.value   = '';
   if (dateTo)     dateTo.value     = '';
   filterShipments();
@@ -1039,6 +1057,20 @@ async function commitBulkStatus(ids, newStatus, extraPayload) {
   }
 }
 
+/** Format a Lebanese Lira stat value for display: Arabic gets a descriptive "ألف/مليون ليرة"
+ *  phrase (e.g. "500 ألف ليرة" for 500,000, "125 مليون ليرة" for 125,000,000) instead of the
+ *  compact "M" suffix used for other languages (e.g. "1.8M"). */
+function formatLebStat(value) {
+  const v = value || 0;
+  if (currentLang === 'ar') {
+    const abs = Math.abs(v);
+    if (abs >= 1000000) return `${formatNum(v / 1000000)} مليون ليرة`;
+    if (abs >= 1000)    return `${formatNum(v / 1000)} ألف ليرة`;
+    return `${formatNum(v)} ليرة`;
+  }
+  return `${formatNum(v / 1000000)}M`;
+}
+
 // ===== INLINE CELL EDITING (double-click a shipments row cell) =====
 /** Maps an editable field name to how its inline editor should be rendered. */
 const INLINE_EDIT_FIELDS = {
@@ -1145,7 +1177,7 @@ function inlineEditCell(el, id, field) {
         confirmAction(
           t('convertToDriverTitle'),
           t('convertToDriverMsg').replace('{name}', s.contractorName || '').replace('{new}', driverName),
-          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { contractorId: '', contractorName: '' }); },
+          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { contractorId: '', contractorName: '', contractorDeliveryCost: 0 }); },
           () => { el.innerHTML = prevHTML; }
         );
       } else if (field === 'contractorId' && input.value && s.driverId) {
@@ -1154,7 +1186,7 @@ function inlineEditCell(el, id, field) {
         confirmAction(
           t('convertToContractorTitle'),
           t('convertToContractorMsg').replace('{name}', s.driverName || '').replace('{new}', contractorName),
-          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { driverId: '', driverName: '' }); },
+          () => { saveInlineField(id, field, input.value, () => { el.innerHTML = prevHTML; }, { driverId: '', driverName: '', driverDeliveryCost: 0 }); },
           () => { el.innerHTML = prevHTML; }
         );
       } else {
@@ -1171,12 +1203,21 @@ async function saveInlineField(id, field, value, onFail, extraPayload) {
   if (field === 'companyId') {
     const obj = companies_cache.find(c => c.id === value);
     payload.companyId = value || ''; payload.companyName = obj?.name || '';
+    // Company drives the order's delivery profit — keep it synced to whatever this
+    // company's own stored delivery cost currently is, same as the New/Edit form.
+    payload.deliveryProfit = value ? (obj?.deliveryCost || 0) : 0;
   } else if (field === 'contractorId') {
     const obj = contractors_cache.find(c => c.id === value);
     payload.contractorId = value || ''; payload.contractorName = obj?.name || '';
+    // Re-sync the contractor delivery cost to the newly-picked contractor's own stored
+    // cost whenever the contractor assignment changes (including switching between two
+    // contractors, or clearing it back to none).
+    payload.contractorDeliveryCost = value ? (obj?.deliveryCost || 0) : 0;
   } else if (field === 'driverId') {
     const obj = drivers_cache.find(d => d.id === value);
     payload.driverId = value || ''; payload.driverName = obj?.name || '';
+    // Same idea as contractorDeliveryCost above, but for the driver side.
+    payload.driverDeliveryCost = value ? (obj?.deliveryCost || 0) : 0;
   } else if (field === 'shipNumber') {
     payload.shipNumber = parseInt(value, 10) || 0;
   } else {
@@ -1248,7 +1289,7 @@ function shipmentFormHTML(data) {
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('company')}</label>
-      <select id="f-company" class="form-select"><option value="">${t('selectCompanyOption')}</option>${companyOptions}</select>
+      <select id="f-company" class="form-select" onchange="onCompanyFieldChange(this)"><option value="">${t('selectCompanyOption')}</option>${companyOptions}</select>
     </div>
     <div class="form-group">
       <label class="form-label">${t('contractor')}</label>
@@ -1350,23 +1391,61 @@ function onStatusChange() {
   if (costRow)   costRow.style.display   = status === 'Returned-Paid' ? 'block' : 'none';
 }
 
+/** Auto-fill the Driver Cost field in the New/Edit Shipment form to match whichever driver
+ *  is currently selected — each driver has its own stored delivery cost (set on the Drivers
+ *  page), so the admin no longer has to type it in by hand. Clears the field when no driver
+ *  is selected. */
+function setDriverCostField(driverId) {
+  const el = document.getElementById('f-drivercost');
+  if (el) el.value = driverId ? (drivers_cache.find(d => d.id === driverId)?.deliveryCost || 0) : '';
+}
+/** Same as setDriverCostField(), but for the Contractor Cost field / a contractor's own
+ *  stored delivery cost. */
+function setContractorCostField(contractorId) {
+  const el = document.getElementById('f-contractorcost');
+  if (el) el.value = contractorId ? (contractors_cache.find(c => c.id === contractorId)?.deliveryCost || 0) : '';
+}
+/** Re-reads whichever driver/contractor is *currently* selected in the form and re-applies
+ *  both cost fields from that final state — called at the end of every driver/contractor
+ *  change path (including confirm/cancel of the convert-warning dialog) instead of trying
+ *  to set each field inline in every branch, so the two cost fields can never end up out of
+ *  sync with what's actually selected. */
+function syncDriverContractorCosts() {
+  setDriverCostField(document.getElementById('f-driver')?.value || '');
+  setContractorCostField(document.getElementById('f-contractor')?.value || '');
+}
+
+/** Auto-fill the (company) Profit field in the New/Edit Shipment form to match whichever
+ *  company is currently selected — each company has its own stored delivery cost on the
+ *  Companies page, used here as the delivery profit for orders under that company. */
+function onCompanyFieldChange(sel) {
+  const companyId = sel.value;
+  const el = document.getElementById('f-profit');
+  if (el) el.value = companyId ? (companies_cache.find(c => c.id === companyId)?.deliveryCost || 0) : '';
+}
+
 /** Selecting a driver while the order was originally assigned to a contractor (still
  *  showing that contractor in the form) warns the admin before converting it — same
- *  in reverse for selecting a contractor while a driver was originally assigned. */
+ *  in reverse for selecting a contractor while a driver was originally assigned.
+ *  Either way, the Driver Cost / Contractor Cost fields are kept in sync automatically
+ *  with whichever driver/contractor ends up selected, using that entity's own stored
+ *  delivery cost — for both a brand-new shipment and switching driver/contractor on an
+ *  existing one. */
 function onDriverFieldChange(sel) {
   const contractorSel = document.getElementById('f-contractor');
   const orig = window._editShipmentOriginal;
   const newDriverId = sel.value;
   if (!newDriverId || !contractorSel.value || !orig || orig.contractorId !== contractorSel.value) {
     if (newDriverId) contractorSel.value = '';
+    syncDriverContractorCosts();
     return;
   }
   const driverName = drivers_cache.find(d => d.id === newDriverId)?.name || '';
   confirmAction(
     t('convertToDriverTitle'),
     t('convertToDriverMsg').replace('{name}', orig.contractorName || '').replace('{new}', driverName),
-    () => { contractorSel.value = ''; },
-    () => { sel.value = ''; }
+    () => { contractorSel.value = ''; syncDriverContractorCosts(); },
+    () => { sel.value = ''; syncDriverContractorCosts(); }
   );
 }
 function onContractorFieldChange(sel) {
@@ -1375,14 +1454,15 @@ function onContractorFieldChange(sel) {
   const newContractorId = sel.value;
   if (!newContractorId || !driverSel.value || !orig || orig.driverId !== driverSel.value) {
     if (newContractorId) driverSel.value = '';
+    syncDriverContractorCosts();
     return;
   }
   const contractorName = contractors_cache.find(c => c.id === newContractorId)?.name || '';
   confirmAction(
     t('convertToContractorTitle'),
     t('convertToContractorMsg').replace('{name}', orig.driverName || '').replace('{new}', contractorName),
-    () => { driverSel.value = ''; },
-    () => { sel.value = ''; }
+    () => { driverSel.value = ''; syncDriverContractorCosts(); },
+    () => { sel.value = ''; syncDriverContractorCosts(); }
   );
 }
 
@@ -2365,22 +2445,36 @@ async function renderGeneral() {
   // Income = the "Amount Due to Company" total (company revenue minus our profit share).
   // Outcome = "Amount Due from Driver" + "Amount Due from Contractor" totals combined — the
   // same figures already shown in the tables' footer rows below, just added together here.
+  // NOTE: these were previously assigned backwards (income showed the driver/contractor
+  // figure and outcome showed the company figure) — swapped here to match the definitions
+  // above, with card order/labels left exactly where they were originally.
   const companySum    = sumRows(Object.entries(byCompany));
   const driverSum      = sumRows(Object.entries(byDriver).filter(([k]) => k !== '—'));
   const contractorSum  = sumRows(Object.entries(byContractor).filter(([k]) => k !== '—'));
-  const incomeDol  = companySum.dol - companySum.second;
-  const incomeLeb  = companySum.leb;
-  const outcomeDol = (driverSum.dol - driverSum.second) + (contractorSum.dol - contractorSum.second);
-  const outcomeLeb = driverSum.leb + contractorSum.leb;
+  const incomeDol  = (driverSum.dol - driverSum.second) + (contractorSum.dol - contractorSum.second);
+  const incomeLeb  = driverSum.leb + contractorSum.leb;
+  const outcomeDol = companySum.dol - companySum.second;
+  const outcomeLeb = companySum.leb;
+
+  // Stashed for exportGeneralReportExcel()/exportGeneralReportPDF() (js/ui.js), which have
+  // no DB access of their own and need this same computed breakdown to build the export.
+  window._generalReportData = {
+    totalShipments: ships.length, showProfit,
+    byDriver, byContractor, byCompany,
+    driverHasLeb, contractorHasLeb, companyHasLeb,
+    driverSum, contractorSum, companySum,
+    incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+  };
 
   content.innerHTML = `
-  ${pageHeader(t('generalReport'), [t('finance')])}
+  ${pageHeader(t('generalReport'), [t('finance')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportGeneralReportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportGeneralReportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : '')}
   <div class="stats-grid" style="margin-bottom:24px;">
     <div class="stat-card brand"><div class="stat-icon brand">${ICONS.package}</div><div class="stat-label">${t('totalShipments')}</div><div class="stat-value">${ships.length}</div></div>
-    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.dollarSign}</div><div class="stat-label">${t('incomeDollar')}</div><div class="stat-value mono">$${formatNum(incomeDol)}</div></div>
-    <div class="stat-card amber"><div class="stat-icon amber">${ICONS.landmark}</div><div class="stat-label">${t('incomeLeb')}</div><div class="stat-value mono">${formatNum(incomeLeb / 1000000)}M</div></div>
-    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.send}</div><div class="stat-label">${t('outcomeDriversContractors')}</div><div class="stat-value mono">$${formatNum(outcomeDol)}</div></div>` : ''}
-    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.send}</div><div class="stat-label">${t('outcomeDriversContractorsLeb')}</div><div class="stat-value mono">${formatNum(outcomeLeb / 1000000)}M</div></div>` : ''}
+    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.download}</div><div class="stat-label">${t('incomeDollar')}</div><div class="stat-value mono">$${formatNum(incomeDol)}</div></div>
+    <div class="stat-card amber"><div class="stat-icon amber">${ICONS.download}</div><div class="stat-label">${t('incomeLeb')}</div><div class="stat-value mono">${formatLebStat(incomeLeb)}</div></div>
+    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.upload}</div><div class="stat-label">${t('outcomeDriversContractors')}</div><div class="stat-value mono">$${formatNum(outcomeDol)}</div></div>` : ''}
+    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.upload}</div><div class="stat-label">${t('outcomeDriversContractorsLeb')}</div><div class="stat-value mono">${formatLebStat(outcomeLeb)}</div></div>` : ''}
     ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('netProfit')}</div><div class="stat-value mono">$${formatNum(netProfit)}</div></div>` : ''}
   </div>
   <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;" class="report-grid">

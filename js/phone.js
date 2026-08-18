@@ -41,7 +41,7 @@ function phoneFieldHTML(prefix, value, extraInputAttrs) {
   return `
   <div class="phone-field">
     <div class="dropdown" id="${prefix}-dd">
-      <button type="button" class="phone-code-btn" onclick="togglePhoneDropdown('${prefix}')">
+      <button type="button" class="phone-code-btn" tabindex="-1" onclick="togglePhoneDropdown('${prefix}')">
         <span class="phone-flag">${flagImgHTML(country.iso)}</span><span class="phone-dial">+${country.dial}</span><span class="phone-caret">▾</span>
       </button>
       <div class="dropdown-menu phone-dropdown-menu">
