@@ -2456,6 +2456,34 @@ async function renderGeneral() {
   const outcomeDol = companySum.dol - companySum.second;
   const outcomeLeb = companySum.leb;
 
+  // ── Merged Company/Contractor reconciliation ──
+  // Some institutes act as BOTH a client company (they ship orders through us, so we owe
+  // them their share) AND a delivery contractor (they also deliver for us, so they owe us
+  // their collections minus their fee) — e.g. the same "Hajar speed drop" name can appear
+  // in both the By Company and By Contractor tables above. Left as two separate rows, it's
+  // easy to miss that the two amounts should really be netted against each other into one
+  // settlement. Only meaningful with profit visibility, since it's built from the
+  // profit/cost figures those tables already compute.
+  const mergedNames = showProfit
+    ? Object.keys(byCompany).filter(name => name !== '—' && byContractor[name])
+    : [];
+  const mergedEntries = mergedNames.map(name => {
+    const c = byCompany[name], k = byContractor[name];
+    const companyProfit = c.profit || 0;
+    const companyDue    = c.dol - companyProfit;  // amount WE owe THEM, as their delivery company
+    const contractorFee = k.cost || 0;
+    const contractorDue = k.dol - contractorFee;  // amount THEY owe US, as our delivery contractor
+    return {
+      name, companyCount: c.count, contractorCount: k.count,
+      companyRevenue: c.dol, companyProfit, companyDue,
+      contractorRevenue: k.dol, contractorFee, contractorDue,
+      netSettlement: companyDue - contractorDue,  // >0: we owe them net; <0: they owe us net
+      netProfit: companyProfit - contractorFee,   // our profit from this institute, both roles combined
+    };
+  }).sort((a, b) => Math.abs(b.netSettlement) - Math.abs(a.netSettlement));
+  const mergedTotalNet    = mergedEntries.reduce((a, e) => a + e.netSettlement, 0);
+  const mergedTotalProfit = mergedEntries.reduce((a, e) => a + e.netProfit, 0);
+
   // Stashed for exportGeneralReportExcel()/exportGeneralReportPDF() (js/ui.js), which have
   // no DB access of their own and need this same computed breakdown to build the export.
   window._generalReportData = {
@@ -2464,7 +2492,69 @@ async function renderGeneral() {
     driverHasLeb, contractorHasLeb, companyHasLeb,
     driverSum, contractorSum, companySum,
     incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+    mergedEntries, mergedTotalNet, mergedTotalProfit,
   };
+
+  const mergedSectionHTML = mergedEntries.length ? `
+  <div class="merged-report">
+    <div class="merged-report-intro">
+      <div class="merged-report-intro-icon">🔗</div>
+      <div>
+        <div class="merged-report-intro-title">${t('mergedTitle')}</div>
+        <div class="merged-report-intro-sub">${t('mergedSubtitle')}</div>
+      </div>
+    </div>
+    <div class="merged-cards-grid">
+      ${mergedEntries.map(e => {
+        const settleClass = e.netSettlement > 0.005 ? 'owe-them' : (e.netSettlement < -0.005 ? 'owe-us' : 'even');
+        const settleLabel = e.netSettlement > 0.005 ? t('mergedNetOwedToThem') : (e.netSettlement < -0.005 ? t('mergedNetOwedToUs') : t('mergedNetEven'));
+        const settleIcon  = e.netSettlement > 0.005 ? '↑' : (e.netSettlement < -0.005 ? '↓' : '•');
+        return `
+        <div class="merged-card">
+          <div class="merged-card-head">
+            <div class="merged-card-name">🏢 ${esc(e.name)}</div>
+            <span class="merged-card-badge">${t('mergedBadge')}</span>
+          </div>
+          <div class="merged-card-body">
+            <div class="merged-role-col">
+              <div class="merged-role-label company">🏬 ${t('mergedAsCompany')}</div>
+              <div class="merged-role-row"><span>${t('mergedOrders')}</span><span>${e.companyCount}</span></div>
+              <div class="merged-role-row"><span>${t('mergedRevenue')}</span><span>$${formatNum(e.companyRevenue)}</span></div>
+              <div class="merged-role-row"><span>${t('mergedOurProfit')}</span><span style="color:var(--green);">$${formatNum(e.companyProfit)}</span></div>
+              <div class="merged-role-row"><span>${t('mergedWeOwe')}</span><span>$${formatNum(e.companyDue)}</span></div>
+            </div>
+            <div class="merged-role-col">
+              <div class="merged-role-label contractor">🚚 ${t('mergedAsContractor')}</div>
+              <div class="merged-role-row"><span>${t('mergedOrders')}</span><span>${e.contractorCount}</span></div>
+              <div class="merged-role-row"><span>${t('mergedRevenue')}</span><span>$${formatNum(e.contractorRevenue)}</span></div>
+              <div class="merged-role-row"><span>${t('mergedTheirFee')}</span><span style="color:var(--purple);">$${formatNum(e.contractorFee)}</span></div>
+              <div class="merged-role-row"><span>${t('mergedTheyOwe')}</span><span>$${formatNum(e.contractorDue)}</span></div>
+            </div>
+          </div>
+          <div class="merged-settlement ${settleClass}">
+            <span class="merged-settlement-label">${settleIcon} ${settleLabel}</span>
+            <span class="merged-settlement-value">$${formatNum(Math.abs(e.netSettlement))}</span>
+          </div>
+          <div class="merged-profit-note">💰 ${t('mergedNetProfitNote')} <strong>$${formatNum(e.netProfit)}</strong></div>
+        </div>`;
+      }).join('')}
+    </div>
+    ${mergedEntries.length > 1 ? `
+    <div class="merged-summary-strip">
+      <div class="merged-summary-item"><div class="label">${t('mergedSummaryTitle')}</div></div>
+      <div class="merged-summary-item">
+        <div class="label">${t('mergedSummaryNet')}</div>
+        <div class="value" style="color:${mergedTotalNet > 0.005 ? 'var(--red)' : (mergedTotalNet < -0.005 ? 'var(--green)' : 'var(--text-2)')};">
+          $${formatNum(Math.abs(mergedTotalNet))}${mergedTotalNet > 0.005 ? ` (${t('mergedNetOwedToThem')})` : (mergedTotalNet < -0.005 ? ` (${t('mergedNetOwedToUs')})` : '')}
+        </div>
+      </div>
+      <div class="merged-summary-item">
+        <div class="label">${t('mergedSummaryProfit')}</div>
+        <div class="value" style="color:var(--green);">$${formatNum(mergedTotalProfit)}</div>
+      </div>
+    </div>` : ''}
+  </div>
+  ` : '';
 
   content.innerHTML = `
   ${pageHeader(t('generalReport'), [t('finance')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportGeneralReportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
@@ -2477,6 +2567,7 @@ async function renderGeneral() {
     ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.upload}</div><div class="stat-label">${t('outcomeDriversContractorsLeb')}</div><div class="stat-value mono">${formatLebStat(outcomeLeb)}</div></div>` : ''}
     ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('netProfit')}</div><div class="stat-value mono">$${formatNum(netProfit)}</div></div>` : ''}
   </div>
+  ${mergedSectionHTML}
   <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;" class="report-grid">
     <div class="table-container">
       <div class="card-header"><span class="card-title">${t('byDriver')}</span></div>

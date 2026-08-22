@@ -619,14 +619,37 @@ const EXPORT_COLUMN_DEFS = [
   { key: 'priceDollar',           label: 'Price ($)',        width: 12, format: 'dollar', total: true },
   { key: 'priceLeb',              label: 'Price (L.L.)',     width: 14, format: 'leb',    total: true },
   { key: 'deliveryCost',          label: 'Delivery Cost',    width: 14, format: 'dollar' },
-  { key: 'driverDeliveryCost',    label: 'Driver Cost',      width: 13, format: 'dollar' },
-  { key: 'contractorDeliveryCost',label: 'Contractor Cost',  width: 15, format: 'dollar' },
+  { key: 'driverDeliveryCost',    label: 'Driver Cost',      width: 13, format: 'dollar', total: true },
+  { key: 'contractorDeliveryCost',label: 'Contractor Cost',  width: 15, format: 'dollar', total: true },
   { key: 'withdrawnAmountDollar', label: 'Withdrawn ($)',    width: 13, format: 'dollar', total: true },
   { key: 'withdrawnAmountLeb',    label: 'Withdrawn (L.L.)', width: 14, format: 'leb',    total: true },
   { key: 'date',                  label: 'Date',             width: 14, format: 'date'   },
   { key: 'description',           label: 'Description',      width: 28, format: 'text'   },
   { key: 'deliveryProfit',        label: 'Profit ($)',       width: 12, format: 'dollar', total: true, profitOnly: true },
 ];
+
+/** Sums one export column across a set of shipments for the totals row, applying the same
+ *  status-based rules the on-screen Shipments summary bar uses (see isProfitEligible() and
+ *  shipTotalDollar()/shipTotalLeb() above) instead of blindly summing the raw field —
+ *  otherwise the totals row counts Cancelled/Delayed orders that never actually collected
+ *  money or paid a driver/contractor, and disagrees with the page it's exported from.
+ *  priceDollar/priceLeb: only what shipTotalDollar()/shipTotalLeb() count as actually
+ *  collected (Delivered/Returned-Paid/Withdrawn), not the raw order price.
+ *  driverDeliveryCost/contractorDeliveryCost/deliveryProfit: only rows where a delivery
+ *  action actually happened (isProfitEligible), same as the driver/contractor/company
+ *  profit figures shown on screen. */
+function exportColumnTotal(col, ships) {
+  switch (col.key) {
+    case 'priceDollar': return ships.reduce((t, s) => t + shipTotalDollar(s), 0);
+    case 'priceLeb':    return ships.reduce((t, s) => t + shipTotalLeb(s), 0);
+    case 'driverDeliveryCost':
+    case 'contractorDeliveryCost':
+    case 'deliveryProfit':
+      return ships.reduce((t, s) => t + (isProfitEligible(s.status) ? (Number(s[col.key]) || 0) : 0), 0);
+    default:
+      return ships.reduce((t, s) => t + (Number(s[col.key]) || 0), 0);
+  }
+}
 
 /** Merge EXPORT_COLUMN_DEFS with a saved order/visibility list — keeping EVERY column,
  *  including hidden ones, so a picker UI can still show and re-enable them. Any column added
@@ -666,8 +689,12 @@ function getActiveExportColumns(reportId) {
   return resolveColumnsFromConfig(config).filter(c => c.visible && (!c.profitOnly || showProfit));
 }
 
-async function exportExcel(defaultName) {
-  const ships = window._allShips || [];
+async function exportExcel(defaultName, shipsOverride) {
+  // Defaults to window._filteredShips — the exact rows the Shipments page's search/status/
+  // company/driver/date filters are currently showing (kept in sync by filterShipments() in
+  // js/pages.js) — not window._allShips, which is every shipment regardless of filters.
+  // shipsOverride lets callers (e.g. exportArchiveExcel) supply their own already-filtered set.
+  const ships = shipsOverride || window._filteredShips || window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
@@ -766,7 +793,7 @@ async function exportExcel(defaultName) {
   totalsRow.getCell(labelColIdx).value = `TOTAL (${sorted.length} shipments)`;
   columns.forEach((c, i) => {
     if (!c.total) return;
-    const sum = sorted.reduce((total, s) => total + (Number(s[c.key]) || 0), 0);
+    const sum = exportColumnTotal(c, sorted);
     const cell = totalsRow.getCell(i + 1);
     cell.value  = sum;
     cell.numFmt = c.format === 'leb' ? '#,##0' : '#,##0.00';
@@ -810,9 +837,10 @@ function imageToDataURL(url) {
 /** Build the report as real HTML off-screen (so Arabic text shapes/joins and RTL reads
  *  correctly, which jsPDF's own text drawing cannot do), rasterize it with html2canvas,
  *  then slice that image across as many A4 pages as needed. */
-async function exportPDF(defaultName) {
+async function exportPDF(defaultName, shipsOverride) {
   if (!window.jspdf || !window.html2canvas) { toast(t('pdfLibMissing'), 'error'); return; }
-  const ships = window._allShips || [];
+  // Same filtered-by-default behavior as exportExcel() above — see comment there.
+  const ships = shipsOverride || window._filteredShips || window._allShips || [];
   if (!ships.length) { toast(t('noDataToExport'), 'info'); return; }
 
   const suggested = defaultName || `sonick-shipments-${new Date().toISOString().slice(0, 10)}`;
@@ -859,7 +887,7 @@ async function exportPDF(defaultName) {
   const totalsHtml = cols.map((c, i) => {
     let val = i === totalsLabelIdx ? t('pdfTotalLabel').replace('{n}', sorted.length) : '';
     if (c.total) {
-      const sum = sorted.reduce((total, s) => total + (Number(s[c.key]) || 0), 0);
+      const sum = exportColumnTotal(c, sorted);
       val = (c.format === 'dollar' ? '$' : '') + formatNum(sum);
     }
     return `<td style="padding:7px 5px;border:1px solid #4F6EF5;text-align:center;color:#1F2937;font-weight:700;">${val}</td>`;
@@ -934,17 +962,14 @@ async function exportPDF(defaultName) {
 }
 
 async function exportArchiveExcel() {
-  const saved      = window._allShips;
-  window._allShips = window._allArchShips || [];
-  await exportExcel(`sonick-archive-${new Date().toISOString().slice(0, 10)}`);
-  window._allShips = saved;
+  // window._filteredArchShips is the Archive page's own filtered set (kept in sync by
+  // filterArchive() in js/pages.js). Passed explicitly as an override so this always
+  // reflects the Archive page's filters, not window._filteredShips from the Shipments page.
+  await exportExcel(`sonick-archive-${new Date().toISOString().slice(0, 10)}`, window._filteredArchShips || window._allArchShips || []);
 }
 
 async function exportArchivePDF() {
-  const saved      = window._allShips;
-  window._allShips = window._allArchShips || [];
-  await exportPDF(`sonick-archive-${new Date().toISOString().slice(0, 10)}`);
-  window._allShips = saved;
+  await exportPDF(`sonick-archive-${new Date().toISOString().slice(0, 10)}`, window._filteredArchShips || window._allArchShips || []);
 }
 
 // ===== GENERAL REPORT EXPORT (Excel + PDF) =====
@@ -984,10 +1009,14 @@ function generalReportColumnDefs(opts) {
     { label: t('statusBreakdownCol'), fmt: 'text',  get: (name, v) => statusBreakdownText(v.statusCounts) },
     { label: incomeLabel,           fmt: 'dollar', get: (name, v) => v.dol },
   ];
+  // Per-entity rows carry their profit/cost figure under `.cost` (driver/contractor) or
+  // `.profit` (company). The totals row instead comes from sumRows() (js/pages.js), which
+  // aggregates that same figure under `.second` — so it must be checked first, or the
+  // totals row silently falls back to 0 since it has neither `.cost` nor `.profit`.
   if (showProfit) {
     cols.push(
-      { label: profitLabel,         fmt: 'dollar', get: (name, v) => (v.cost !== undefined ? v.cost : v.profit) || 0 },
-      { label: totalLabel,          fmt: 'dollar', get: (name, v) => v.dol - ((v.cost !== undefined ? v.cost : v.profit) || 0) },
+      { label: profitLabel,         fmt: 'dollar', get: (name, v) => (v.second !== undefined ? v.second : (v.cost !== undefined ? v.cost : v.profit)) || 0 },
+      { label: totalLabel,          fmt: 'dollar', get: (name, v) => v.dol - ((v.second !== undefined ? v.second : (v.cost !== undefined ? v.cost : v.profit)) || 0) },
     );
   }
   if (hasLeb) cols.push({ label: totalLebLabel, fmt: 'leb', get: (name, v) => v.leb || 0 });
@@ -1008,6 +1037,7 @@ async function exportGeneralReportExcel() {
     driverHasLeb, contractorHasLeb, companyHasLeb,
     driverSum, contractorSum, companySum,
     incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+    mergedEntries, mergedTotalNet, mergedTotalProfit,
   } = data;
   const C = GENERAL_REPORT_COLORS;
   const isRTL = document.documentElement.dir === 'rtl';
@@ -1148,6 +1178,95 @@ async function exportGeneralReportExcel() {
     Object.entries(byCompany).sort((a, b) => b[1].dol - a[1].dol), companySum,
     { entityLabel: t('company'), incomeLabel: t('companyOutcomeCol'), profitLabel: t('companyProfitCol'), totalLabel: t('companyTotalCol'), totalLebLabel: t('companyTotalColLeb'), hasLeb: companyHasLeb, accentColor: C.green });
 
+  // ---- Merged Company/Contractor reconciliation sheet (institutes that are both) ----
+  if (mergedEntries && mergedEntries.length) {
+    const mSheet = workbook.addWorksheet('Merged', { views: [{ state: 'frozen', ySplit: 3, rightToLeft: isRTL }] });
+    const mCols = [
+      { label: t('mergedTitle'),                     fmt: 'text' },
+      { label: `${t('mergedAsCompany')} — ${t('mergedOrders')}`,    fmt: 'number' },
+      { label: `${t('mergedAsCompany')} — ${t('mergedRevenue')}`,   fmt: 'dollar' },
+      { label: `${t('mergedAsCompany')} — ${t('mergedOurProfit')}`, fmt: 'dollar' },
+      { label: `${t('mergedAsCompany')} — ${t('mergedWeOwe')}`,     fmt: 'dollar' },
+      { label: `${t('mergedAsContractor')} — ${t('mergedOrders')}`,   fmt: 'number' },
+      { label: `${t('mergedAsContractor')} — ${t('mergedRevenue')}`,  fmt: 'dollar' },
+      { label: `${t('mergedAsContractor')} — ${t('mergedTheirFee')}`, fmt: 'dollar' },
+      { label: `${t('mergedAsContractor')} — ${t('mergedTheyOwe')}`,  fmt: 'dollar' },
+      { label: t('mergedNetSettlement') || 'Net Settlement ($)', fmt: 'dollar' },
+      { label: t('mergedSummaryProfit'), fmt: 'dollar' },
+    ];
+    const mColCount = mCols.length;
+
+    mSheet.mergeCells(1, 1, 1, mColCount);
+    const mt1 = mSheet.getCell(1, 1);
+    mt1.value = `🔗  Sonick Delivery System — ${t('mergedTitle')}`;
+    mt1.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+    mt1.alignment = { vertical: 'middle', horizontal: 'center' };
+    mt1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB368FF' } };
+    mSheet.getRow(1).height = 28;
+
+    mSheet.mergeCells(2, 1, 2, mColCount);
+    const mt2 = mSheet.getCell(2, 1);
+    mt2.value = `Exported ${exportedOn}  •  ${mergedEntries.length} institute${mergedEntries.length === 1 ? '' : 's'}`;
+    mt2.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF6B7280' } };
+    mt2.alignment = { vertical: 'middle', horizontal: 'center' };
+    mt2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+    mSheet.getRow(2).height = 18;
+
+    const mHeaderRow = mSheet.getRow(3);
+    mCols.forEach((c, i) => { mHeaderRow.getCell(i + 1).value = c.label; });
+    mHeaderRow.eachCell(cell => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF8A3FE0' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF6A2BB0' } }, bottom: { style: 'thin', color: { argb: 'FF6A2BB0' } },
+        left: { style: 'thin', color: { argb: 'FF6A2BB0' } }, right: { style: 'thin', color: { argb: 'FF6A2BB0' } },
+      };
+    });
+    mHeaderRow.height = 32;
+    mSheet.columns = mCols.map((c, i) => ({ width: i === 0 ? 22 : 17 }));
+
+    mergedEntries.forEach((e, idx) => {
+      const row = mSheet.addRow([
+        e.name, e.companyCount, e.companyRevenue, e.companyProfit, e.companyDue,
+        e.contractorCount, e.contractorRevenue, e.contractorFee, e.contractorDue,
+        e.netSettlement, e.netProfit,
+      ]);
+      const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF3EBFF';
+      row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        const c = mCols[colNum - 1];
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bandColor } };
+        cell.alignment = { horizontal: c.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE4E8F5' } }, bottom: { style: 'thin', color: { argb: 'FFE4E8F5' } },
+          left: { style: 'thin', color: { argb: 'FFE4E8F5' } }, right: { style: 'thin', color: { argb: 'FFE4E8F5' } },
+        };
+        if (c.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+        if (colNum === 1) cell.font = { bold: true };
+        if (colNum === mColCount - 1) cell.font = { ...(cell.font || {}), color: { argb: e.netSettlement > 0.005 ? 'FFD42C4E' : (e.netSettlement < -0.005 ? 'FF1A8F52' : 'FF6B7280') }, bold: true };
+        if (colNum === mColCount)     cell.font = { ...(cell.font || {}), color: { argb: 'FF1A8F52' }, bold: true };
+      });
+    });
+
+    const mTotalRow = mSheet.addRow([
+      `${t('total')} (${mergedEntries.length})`, '', '', '', '', '', '', '', '',
+      mergedTotalNet, mergedTotalProfit,
+    ]);
+    mTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      const c = mCols[colNum - 1];
+      cell.font = { bold: true, color: { argb: C.ink } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFE4FF' } };
+      cell.alignment = { horizontal: c.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FFB368FF' } }, bottom: { style: 'thin', color: { argb: 'FFB368FF' } },
+        left: { style: 'thin', color: { argb: 'FFB368FF' } }, right: { style: 'thin', color: { argb: 'FFB368FF' } },
+      };
+      if (c.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+    });
+    mTotalRow.height = 20;
+    mSheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: mColCount } };
+  }
+
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url  = URL.createObjectURL(blob);
@@ -1174,6 +1293,7 @@ async function exportGeneralReportPDF() {
     driverHasLeb, contractorHasLeb, companyHasLeb,
     driverSum, contractorSum, companySum,
     incomeDol, incomeLeb, outcomeDol, outcomeLeb, netProfit,
+    mergedEntries, mergedTotalNet, mergedTotalProfit,
   } = data;
   const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   const isRTL = document.documentElement.dir === 'rtl';
@@ -1310,6 +1430,52 @@ async function exportGeneralReportPDF() {
     </div>`;
   };
 
+  // ---- Merged Company/Contractor reconciliation table (institutes that are both) ----
+  const mergedHTML = (mergedEntries && mergedEntries.length) ? (() => {
+    const headLabels = [
+      t('mergedTitle'),
+      `${t('mergedAsCompany')} · ${t('mergedOrders')}`, `${t('mergedAsCompany')} · ${t('mergedRevenue')}`,
+      `${t('mergedAsCompany')} · ${t('mergedOurProfit')}`, `${t('mergedAsCompany')} · ${t('mergedWeOwe')}`,
+      `${t('mergedAsContractor')} · ${t('mergedOrders')}`, `${t('mergedAsContractor')} · ${t('mergedRevenue')}`,
+      `${t('mergedAsContractor')} · ${t('mergedTheirFee')}`, `${t('mergedAsContractor')} · ${t('mergedTheyOwe')}`,
+      t('mergedNetSettlement'), t('mergedSummaryProfit'),
+    ];
+    const colPct = [16, 7.5, 8.5, 8.5, 8.5, 7.5, 8.5, 8.5, 8.5, 9, 9];
+    const usableWidth = REPORT_WIDTH - REPORT_PAD;
+    const colPx = colPct.map(w => Math.floor(usableWidth * (w / 100)) - 14);
+    const cellStyle = (isText, extra) => `padding:6px 4px;border:1px solid #E0C7FF;text-align:${isText ? (isRTL ? 'right' : 'left') : 'center'};color:#1F2937;${extra || ''}`;
+
+    const rows = mergedEntries.map((e, idx) => {
+      const netColor = e.netSettlement > 0.005 ? '#D42C4E' : (e.netSettlement < -0.005 ? '#1A8F52' : '#6B7280');
+      const cells = [
+        arabicHTML(e.name, { fontSize: 10.5, weight: 700, color: '#1F2937', maxWidth: colPx[0], align: isRTL ? 'right' : 'left' }),
+        formatNum(e.companyCount), '$' + formatNum(e.companyRevenue), '$' + formatNum(e.companyProfit), '$' + formatNum(e.companyDue),
+        formatNum(e.contractorCount), '$' + formatNum(e.contractorRevenue), '$' + formatNum(e.contractorFee), '$' + formatNum(e.contractorDue),
+        `<span style="color:${netColor};font-weight:800;">$${formatNum(Math.abs(e.netSettlement))}</span>`,
+        `<span style="color:#1A8F52;font-weight:800;">$${formatNum(e.netProfit)}</span>`,
+      ];
+      return `<tr style="background:${idx % 2 === 0 ? '#ffffff' : '#F8F1FF'};">${cells.map((c, i) => `<td style="${cellStyle(i === 0)}">${c}</td>`).join('')}</tr>`;
+    }).join('');
+
+    const totalCells = [
+      arabicHTML(`${t('total')} (${mergedEntries.length})`, { fontSize: 10.5, weight: 700, color: '#1F2937', maxWidth: colPx[0], align: isRTL ? 'right' : 'left' }),
+      '', '', '', '', '', '', '', '',
+      `<span style="color:${mergedTotalNet > 0.005 ? '#D42C4E' : (mergedTotalNet < -0.005 ? '#1A8F52' : '#6B7280')};font-weight:800;">$${formatNum(Math.abs(mergedTotalNet))}</span>`,
+      `<span style="color:#1A8F52;font-weight:800;">$${formatNum(mergedTotalProfit)}</span>`,
+    ];
+
+    return `
+    <div style="margin-top:18px;" dir="${isRTL ? 'rtl' : 'ltr'}">
+      <div style="background:linear-gradient(135deg,#8A3FE0,#B368FF);padding:8px 12px;border-radius:8px 8px 0 0;">${arabicHTML(`🔗 ${t('mergedTitle')}`, { fontSize: 13, weight: 700, color: '#ffffff', align: 'center' })}</div>
+      <table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:9.5px;" dir="${isRTL ? 'rtl' : 'ltr'}">
+        <colgroup>${colPct.map(w => `<col style="width:${w}%;">`).join('')}</colgroup>
+        <thead><tr style="background:#8A3FE0;">${headLabels.map((l, i) => `<th style="padding:7px 4px;border:1px solid #6A2BB0;text-align:center;">${arabicHTML(l, { fontSize: 9.5, weight: 700, color: '#ffffff', maxWidth: colPx[i], align: 'center' })}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="background:#EFE4FF;">${totalCells.map((c, i) => `<td style="${cellStyle(i === 0, 'border-color:#B368FF;font-weight:700;')}">${c}</td>`).join('')}</tr></tfoot>
+      </table>
+    </div>`;
+  })() : '';
+
   const reportHTML = `
     <div id="pdf-general-report-root" dir="${isRTL ? 'rtl' : 'ltr'}" style="direction:${isRTL ? 'rtl' : 'ltr'};width:${REPORT_WIDTH}px;background:#ffffff;font-family:'Calibri','Segoe UI',Arial,sans-serif;color:#1F2937;padding:30px 34px;">
       <div style="display:flex;align-items:center;gap:16px;border-bottom:3px solid #4F6EF5;padding-bottom:16px;margin-bottom:16px;">
@@ -1324,6 +1490,7 @@ async function exportGeneralReportPDF() {
         </div>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">${kpis.join('')}</div>
+      ${mergedHTML}
       ${tableHTML(t('byDriver'), Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), driverSum,
         { entityLabel: t('driver'), incomeLabel: t('driverIncomeCol'), profitLabel: t('driverProfitCol'), totalLabel: t('driverTotalCol'), totalLebLabel: t('driverTotalColLeb'), hasLeb: driverHasLeb, accentColor: '#3DA9FC' })}
       ${tableHTML(t('byContractor'), Object.entries(byContractor).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count), contractorSum,

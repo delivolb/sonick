@@ -324,6 +324,88 @@ tbody td { padding: 12px 16px; font-size: 0.929rem; color: var(--text); vertical
   padding: 18px 16px;
 }
 
+/* ===== MERGED COMPANY/CONTRACTOR RECONCILIATION (General Report) =====
+   For institutes that act as both a client company and a delivery contractor at once —
+   nets what we owe them (as company) against what they owe us (as contractor) into one
+   settlement card per institute, instead of two easy-to-miss separate rows. */
+.merged-report { margin-bottom: 24px; }
+.merged-report-intro {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 20px; margin-bottom: 16px;
+  background: var(--brand-grad); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glow); color: #fff;
+}
+.merged-report-intro-icon {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  background: rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem;
+}
+.merged-report-intro-title { font-size: 1.05rem; font-weight: 800; margin-bottom: 2px; }
+.merged-report-intro-sub   { font-size: 0.83rem; opacity: 0.92; }
+
+.merged-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+
+.merged-card {
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  overflow: hidden; box-shadow: var(--shadow-sm);
+}
+.merged-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--bg-3);
+}
+.merged-card-name { font-size: 1rem; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+.merged-card-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 99px;
+  font-size: 0.7rem; font-weight: 800; background: var(--brand-ghost); color: var(--brand-light);
+  border: 1px solid var(--brand-border); white-space: nowrap;
+}
+.merged-card-body { display: grid; grid-template-columns: 1fr 1fr; }
+.merged-role-col { padding: 14px 18px; }
+.merged-role-col + .merged-role-col { border-left: 1px solid var(--border); }
+[dir="rtl"] .merged-role-col + .merged-role-col { border-left: none; border-right: 1px solid var(--border); }
+.merged-role-label {
+  font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.4px;
+  margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.merged-role-label.company    { color: var(--green); }
+.merged-role-label.contractor { color: var(--purple); }
+.merged-role-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.86rem; padding: 4px 0; gap: 8px; }
+.merged-role-row span:first-child { color: var(--text-3); }
+.merged-role-row span:last-child  { font-family: var(--mono); font-weight: 700; white-space: nowrap; }
+
+.merged-settlement {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border-top: 1px solid var(--border);
+}
+.merged-settlement.owe-them { background: var(--red-ghost); }
+.merged-settlement.owe-us   { background: var(--green-ghost); }
+.merged-settlement.even     { background: var(--bg-3); }
+.merged-settlement-label { font-size: 0.83rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.merged-settlement-value { font-size: 1.15rem; font-weight: 800; font-family: var(--mono); }
+.merged-settlement.owe-them .merged-settlement-label,
+.merged-settlement.owe-them .merged-settlement-value { color: var(--red); }
+.merged-settlement.owe-us .merged-settlement-label,
+.merged-settlement.owe-us .merged-settlement-value   { color: var(--green); }
+.merged-settlement.even .merged-settlement-label,
+.merged-settlement.even .merged-settlement-value     { color: var(--text-2); }
+
+.merged-profit-note { padding: 8px 18px 14px; font-size: 0.78rem; color: var(--text-3); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.merged-profit-note strong { color: var(--text); font-family: var(--mono); }
+
+.merged-summary-strip {
+  display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; align-items: center;
+  padding: 16px 20px; background: var(--bg-2); border: 1px dashed var(--border-2); border-radius: var(--radius-lg);
+}
+.merged-summary-item { flex: 1; min-width: 160px; }
+.merged-summary-item .label { font-size: 0.72rem; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; font-weight: 700; }
+.merged-summary-item .value { font-size: 1.2rem; font-weight: 800; font-family: var(--mono); }
+
+@media (max-width: 640px) {
+  .merged-card-body { grid-template-columns: 1fr; }
+  .merged-role-col + .merged-role-col { border-left: none; border-top: 1px solid var(--border); }
+  [dir="rtl"] .merged-role-col + .merged-role-col { border-right: none; border-top: 1px solid var(--border); }
+}
+
 /* ===== MODALS ===== */
 .modal-overlay {
   display: none; position: fixed; inset: 0;
