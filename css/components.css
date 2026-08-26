@@ -566,6 +566,60 @@ tbody td { padding: 12px 16px; font-size: 0.929rem; color: var(--text); vertical
 .restore-mode-option-label { font-size: 0.857rem; font-weight: 700; }
 .restore-mode-option-desc { font-size: 0.786rem; color: var(--text-3); margin-top: 2px; }
 
+/* ===== IMPORT BY EXCEL ===== */
+.import-intro {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 20px; margin-bottom: 16px;
+  background: var(--brand-grad); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glow); color: #fff;
+}
+.import-intro-icon {
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  background: rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem;
+}
+.import-intro-icon svg { width: 24px; height: 24px; }
+.import-intro-title { font-size: 1.05rem; font-weight: 800; margin-bottom: 2px; }
+.import-intro-sub   { font-size: 0.83rem; opacity: 0.92; }
+
+.import-dropzone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 34px 20px; text-align: center; cursor: pointer;
+  border: 2px dashed var(--border-2); border-radius: var(--radius-lg);
+  background: var(--bg-3); transition: border-color .15s, background .15s;
+}
+.import-dropzone:hover, .import-dropzone.dragover { border-color: var(--brand-border); background: var(--brand-ghost); }
+.import-dropzone-icon { width: 40px; height: 40px; opacity: 0.85; margin-bottom: 4px; }
+.import-dropzone-icon svg { width: 100%; height: 100%; }
+.import-dropzone-text { font-size: 0.929rem; font-weight: 700; }
+.import-dropzone-sub  { font-size: 0.786rem; color: var(--text-3); }
+.import-file-chosen { font-size: 0.857rem; font-weight: 700; color: var(--brand-light); }
+
+.import-mapping-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px; padding: 4px 20px 18px;
+}
+.import-mapping-item { display: flex; flex-direction: column; gap: 6px; }
+.import-mapping-item.mapped .form-select { border-color: var(--green); }
+
+.import-stat-pill {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; flex: 1; min-width: 100px; padding: 12px 10px;
+  border-radius: var(--radius); background: var(--bg-3); border: 1px solid var(--border-2);
+}
+.import-stat-pill strong { font-size: 1.4rem; font-weight: 800; line-height: 1; }
+.import-stat-pill span   { font-size: 0.75rem; color: var(--text-3); }
+.import-stat-pill.green  strong { color: var(--green); }
+.import-stat-pill.gray   strong { color: var(--text-2); }
+.import-stat-pill.amber  strong { color: var(--amber); }
+#import-review-stats { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+
+.import-review-section-title { font-size: 0.857rem; font-weight: 700; margin: 6px 0 8px; }
+.import-review-list {
+  max-height: 220px; overflow-y: auto; border: 1px solid var(--border-2);
+  border-radius: var(--radius); padding: 4px; margin-bottom: 14px;
+}
+
 /* ===== DEMO MODE BANNER ===== */
 #demo-mode-banner {
   display: flex; align-items: center; gap: 10px;

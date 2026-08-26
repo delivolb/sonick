@@ -38,6 +38,7 @@ function setupUI() {
   const ndr = document.getElementById('nav-drivers');
   const nu  = document.getElementById('nav-users');
   const nb  = document.getElementById('nav-backup');
+  const nim = document.getElementById('nav-import');
   const nf  = document.getElementById('nav-section-fin');
   const nm  = document.getElementById('nav-section-mgmt');
   const tnb = document.getElementById('topbar-new-ship');
@@ -49,6 +50,7 @@ function setupUI() {
   if (ndr) ndr.style.display = can('canManageDrivers')   ? '' : 'none';
   if (nu)  nu.style.display  = can('canManageUsers')     ? '' : 'none';
   if (nb)  nb.style.display  = can('canManageBackup')    ? '' : 'none';
+  if (nim) nim.style.display = can('canCreateShipments') ? '' : 'none';
   if (tnb) tnb.style.display = can('canCreateShipments') ? '' : 'none';
   if (nf)  nf.style.display  = (can('canViewDebts')       || can('canViewGeneral'))    ? '' : 'none';
   if (nm)  nm.style.display  = (can('canManageCompanies') || can('canManageContractors') || can('canManageDrivers') || can('canManageUsers')) ? '' : 'none';
@@ -79,6 +81,7 @@ function navigate(page) {
     home:           t('home'),
     dashboard:      t('dashboard'),    shipments: t('shipments'),
     archive:        t('archive'),
+    import:         t('importExcelTitle'),
     debts:          t('debtsPayments'),general:   t('generalReport'),
     companies:      t('companies'),    contractors: t('contractors'),
     drivers:        t('drivers'),
@@ -95,6 +98,7 @@ function navigate(page) {
     dashboard:      renderDashboard,
     shipments:      renderShipments,
     archive:        renderArchive,
+    import:         renderImport,
     debts:          renderDebts,
     general:        renderGeneral,
     companies:      renderCompanies,
@@ -437,6 +441,15 @@ function shipTotalLeb(s) {
 }
 
 
+/** Compare two ship numbers for a descending sort — used as the export sort's tie-breaker
+ *  when both rows share the same (or no) date. Ship numbers may now contain letters, not
+ *  just digits, so a plain numeric subtraction (which turns non-numeric values into NaN and
+ *  silently breaks the sort) is replaced with a locale-aware natural compare — this still
+ *  orders purely-numeric ship numbers the same way (2 before 10) while handling letters. */
+function compareShipNumbersDesc(a, b) {
+  return String(b.shipNumber ?? '').localeCompare(String(a.shipNumber ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+}
+
 function statusBadge(status) {
   const cfg = STATUS_CONFIG[status];
   if (cfg) {
@@ -651,6 +664,47 @@ function exportColumnTotal(col, ships) {
   }
 }
 
+/** Reads whichever entity filter dropdowns are currently in the DOM (Shipments page's
+ *  ship-company/driver/contractor-filter, or Archive's arch- equivalents) and, when exactly
+ *  one of Company/Driver/Contractor is selected alone, computes the same subtotal/profit/
+ *  amount-due figures shown in the on-screen summary line (shipSummaryLineHTML /
+ *  filterShipments() & filterArchive() in js/pages.js). Returns null when no single entity
+ *  filter is active, so callers can skip the extra export rows entirely. `ships` must be the
+ *  already-filtered set being exported (window._filteredShips / window._filteredArchShips). */
+function computeExportEntitySummary(ships) {
+  const company    = document.getElementById('ship-company-filter')?.value
+                   || document.getElementById('arch-company-filter')?.value    || '';
+  const driver     = document.getElementById('ship-driver-filter')?.value
+                   || document.getElementById('arch-driver-filter')?.value     || '';
+  const contractor = document.getElementById('ship-contractor-filter')?.value
+                   || document.getElementById('arch-contractor-filter')?.value || '';
+
+  if ([company, driver, contractor].filter(Boolean).length !== 1) return null;
+  if (!can('canViewProfit')) return null;
+
+  let totalDol = 0, totalProfit = 0, driverProfitTotal = 0, contractorProfitTotal = 0;
+  ships.forEach(s => {
+    totalDol += shipTotalDollar(s);
+    if (isProfitEligible(s.status)) {
+      totalProfit          += s.deliveryProfit         || 0;
+      driverProfitTotal     += s.driverDeliveryCost      || 0;
+      contractorProfitTotal += s.contractorDeliveryCost  || 0;
+    }
+  });
+
+  let profitLabel, profitValue, dueLabel;
+  if (driver) {
+    profitLabel = t('driverProfitLabel'); profitValue = driverProfitTotal; dueLabel = t('driverDueLabel');
+  } else if (contractor) {
+    profitLabel = t('contractorProfitLabel'); profitValue = contractorProfitTotal; dueLabel = t('contractorDueLabel');
+  } else {
+    if (!isProfitVisible()) return null; // company's own profit respects the show/hide-profit toggle, same as on screen
+    profitLabel = t('profitF'); profitValue = totalProfit; dueLabel = t('companyDueLabel');
+  }
+
+  return { subtotalLabel: t('total'), subtotalValue: totalDol, profitLabel, profitValue, dueLabel, dueValue: totalDol - profitValue };
+}
+
 /** Merge EXPORT_COLUMN_DEFS with a saved order/visibility list — keeping EVERY column,
  *  including hidden ones, so a picker UI can still show and re-enable them. Any column added
  *  to EXPORT_COLUMN_DEFS after the config was saved is appended (visible) so new columns don't
@@ -710,7 +764,7 @@ async function exportExcel(defaultName, shipsOverride) {
     if (da && db) return db - da;
     if (da) return -1;
     if (db) return 1;
-    return (b.shipNumber || 0) - (a.shipNumber || 0);
+    return compareShipNumbersDesc(a, b);
   });
 
   const colCount = columns.length;
@@ -809,6 +863,35 @@ async function exportExcel(defaultName, shipsOverride) {
   });
   totalsRow.height = 20;
 
+  // ---- Entity summary rows (Subtotal / Profit / Total) ---- shown only when exactly one of
+  // Company/Driver/Contractor is filtered, mirroring the on-screen green summary line.
+  // Label and value sit right next to each other (same side as the TOTAL label above) rather
+  // than spanning the full row width, so they read as one group instead of two stray cells.
+  const entitySummary = computeExportEntitySummary(sorted);
+  if (entitySummary) {
+    const labelSpan = Math.min(4, Math.max(1, colCount - 1));
+    const valueCol  = Math.min(labelSpan + 1, colCount);
+    const addSummaryRow = (label, value, argb) => {
+      const rowIdx = sheet.rowCount + 1;
+      if (labelSpan > 1) sheet.mergeCells(rowIdx, 1, rowIdx, labelSpan);
+      const labelCell = sheet.getCell(rowIdx, 1);
+      const valCell   = sheet.getCell(rowIdx, valueCol);
+      labelCell.value = label;
+      valCell.value   = value;
+      valCell.numFmt  = '#,##0.00';
+      [labelCell, valCell].forEach(cell => {
+        cell.font = { bold: true, color: { argb } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F2F6' } };
+      });
+      labelCell.alignment = { horizontal: 'right', vertical: 'middle' };
+      valCell.alignment   = { horizontal: 'center', vertical: 'middle' };
+      sheet.getRow(rowIdx).height = 18;
+    };
+    addSummaryRow(`${entitySummary.subtotalLabel} ($)`, entitySummary.subtotalValue, 'FF3DA9FC');
+    addSummaryRow(entitySummary.profitLabel,            entitySummary.profitValue,   'FF2ED47A');
+    addSummaryRow(entitySummary.dueLabel,                entitySummary.dueValue,      'FFB368FF');
+  }
+
   // ---- Filter + polish ----
   sheet.autoFilter = { from: { row: headerRowIdx, column: 1 }, to: { row: headerRowIdx, column: colCount } };
 
@@ -858,7 +941,7 @@ async function exportPDF(defaultName, shipsOverride) {
     if (da && db) return db - da;
     if (da) return -1;
     if (db) return 1;
-    return (b.shipNumber || 0) - (a.shipNumber || 0);
+    return compareShipNumbersDesc(a, b);
   });
 
   const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -917,6 +1000,20 @@ async function exportPDF(defaultName, shipsOverride) {
           <tr style="background:#E9EDFF;font-weight:700;">${totalsHtml}</tr>
         </tfoot>
       </table>
+      ${(() => {
+        const es = computeExportEntitySummary(sorted);
+        if (!es) return '';
+        // Compact right-aligned block (matches RTL reading direction) so each label sits
+        // directly beside its value instead of being pushed to opposite ends of the page.
+        const rowStyle = 'display:inline-flex;justify-content:space-between;gap:14px;min-width:280px;padding:7px 12px;border:1px solid #B8C2D9;border-top:none;font-size:12px;font-weight:700;';
+        const wrap = 'display:flex;flex-direction:column;align-items:flex-end;margin-top:0;';
+        return `
+      <div style="${wrap}">
+        <div style="${rowStyle}background:#EAF5FF;color:#1F5FBF;border-top:1px solid #B8C2D9;"><span>${esc(es.subtotalLabel)} ($)</span><span>$${formatNum(es.subtotalValue)}</span></div>
+        <div style="${rowStyle}background:#EAFBF1;color:#1C8A54;"><span>${esc(es.profitLabel)}</span><span>$${formatNum(es.profitValue)}</span></div>
+        <div style="${rowStyle}background:#F5EEFF;color:#7A3FD1;"><span>${esc(es.dueLabel)}</span><span>$${formatNum(es.dueValue)}</span></div>
+      </div>`;
+      })()}
     </div>`;
 
   const container = document.createElement('div');
@@ -1266,6 +1363,291 @@ async function exportGeneralReportExcel() {
     mTotalRow.height = 20;
     mSheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: mColCount } };
   }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${filename}.xlsx`; a.click();
+  URL.revokeObjectURL(url);
+  toast(t('excelExported'), 'success');
+}
+
+// ===== SETTLEMENT STATEMENT EXPORT (كشف نقلة) =====
+// A driver/company/contractor settlement workbook modeled on the office's own manual
+// ledger format: one sheet reconciling every driver's account, one reconciling every
+// company and contractor (merged into a single row per business entity when the same
+// name plays both roles, exactly like the Merged Company/Contractor section above).
+// Every figure that Sonick actually tracks is pulled live from window._generalReportData
+// — nothing here is invented. Two columns per sheet ("Old Balance") are left as blank
+// yellow manual-entry cells because a carried-over balance from outside the system isn't
+// something Sonick's data model tracks; the office fills those in by hand, same as their
+// original spreadsheet does. The named regional sub-team splits and person-to-person
+// hand-off lines from that original ledger aren't reproduced here since Sonick has no
+// concept of driver teams/regions — a footnote on the sheet says so explicitly rather
+// than silently dropping or fabricating that part of the picture.
+
+/** Union of every company AND every contractor name (excluding the "no company/contractor
+ *  assigned" placeholder rows), each carrying whichever of the two roles it actually has —
+ *  so an institute that is both a company and a contractor under the same name gets one
+ *  combined row, exactly like the on-screen Merged Company/Contractor cards. */
+function buildSettlementEntityRows(byCompany, byContractor) {
+  const names = new Set([
+    ...Object.keys(byCompany).filter(k => k !== 'Unknown'),
+    ...Object.keys(byContractor).filter(k => k !== '—'),
+  ]);
+  return [...names].sort((a, b) => a.localeCompare(b)).map(name => ({
+    name, company: byCompany[name] || null, contractor: byContractor[name] || null,
+  }));
+}
+
+async function exportSettlementExcel() {
+  const data = window._generalReportData;
+  if (!data || !data.showProfit) { toast(t('noDataToExport'), 'info'); return; }
+
+  const suggested = `sonick-settlement-${new Date().toISOString().slice(0, 10)}`;
+  const filename = await promptExportFilename(suggested);
+  if (!filename) return; // cancelled
+
+  const { byDriver, byContractor, byCompany } = data;
+  const C = GENERAL_REPORT_COLORS;
+  const isRTL = document.documentElement.dir === 'rtl';
+  const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const YELLOW = 'FFFFF3B0';
+  const manualBorder = { top: { style: 'thin', color: { argb: 'FFD9C441' } }, bottom: { style: 'thin', color: { argb: 'FFD9C441' } }, left: { style: 'thin', color: { argb: 'FFD9C441' } }, right: { style: 'thin', color: { argb: 'FFD9C441' } } };
+  const cellBorder   = { top: { style: 'thin', color: { argb: 'FFE4E8F5' } }, bottom: { style: 'thin', color: { argb: 'FFE4E8F5' } }, left: { style: 'thin', color: { argb: 'FFE4E8F5' } }, right: { style: 'thin', color: { argb: 'FFE4E8F5' } } };
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Sonick Delivery System';
+  workbook.created = new Date();
+
+  const titleBand = (sheet, colCount, title, accent, subtitle) => {
+    sheet.mergeCells(1, 1, 1, colCount);
+    const t1 = sheet.getCell(1, 1);
+    t1.value = `🚚  Sonick Delivery System — ${title}`;
+    t1.font = { name: 'Calibri', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+    t1.alignment = { vertical: 'middle', horizontal: 'center' };
+    t1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: accent } };
+    sheet.getRow(1).height = 28;
+
+    sheet.mergeCells(2, 1, 2, colCount);
+    const t2 = sheet.getCell(2, 1);
+    t2.value = subtitle;
+    t2.font = { name: 'Calibri', size: 10, italic: true, color: { argb: 'FF6B7280' } };
+    t2.alignment = { vertical: 'middle', horizontal: 'center' };
+    t2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+    sheet.getRow(2).height = 18;
+  };
+
+  const headerRowStyle = (row, accentDark) => {
+    row.eachCell(cell => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: accentDark } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = { top: { style: 'thin', color: { argb: 'FF2A3FA0' } }, bottom: { style: 'thin', color: { argb: 'FF2A3FA0' } }, left: { style: 'thin', color: { argb: 'FF2A3FA0' } }, right: { style: 'thin', color: { argb: 'FF2A3FA0' } } };
+    });
+    row.height = 34;
+  };
+
+  // ---- Sheet 1: Driver Settlement ----
+  const driverCols = [
+    { label: '#',                                  fmt: 'number' },
+    { label: t('driver'),                          fmt: 'text'   },
+    { label: t('settlementColNetAccount'),         fmt: 'dollar' },
+    { label: t('settlementColOldBalanceLL'),       fmt: 'leb', manual: true },
+    { label: t('settlementColDriverProfit'),       fmt: 'dollar' },
+    { label: t('settlementColTotalDollar'),        fmt: 'dollar' },
+    { label: t('settlementColTotalLeb'),           fmt: 'leb'    },
+  ];
+  const dSheet = workbook.addWorksheet(t('settlementSheetDriverTitle').slice(0, 31), { views: [{ state: 'frozen', ySplit: 3, rightToLeft: isRTL }] });
+  const driverEntries = Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count);
+  titleBand(dSheet, driverCols.length, t('settlementSheetDriverTitle'), C.blue, `Exported ${exportedOn}  •  ${driverEntries.length} ${t('drivers')}`);
+  const dHeaderRow = dSheet.getRow(3);
+  driverCols.forEach((c, i) => { dHeaderRow.getCell(i + 1).value = c.label; });
+  headerRowStyle(dHeaderRow, C.brandDark);
+  dSheet.columns = driverCols.map((c, i) => ({ width: i === 1 ? 26 : 16 }));
+
+  driverEntries.forEach(([name, v], idx) => {
+    const netAccount = v.dol - (v.cost || 0);
+    const row = dSheet.addRow([{ formula: 'ROW()-3' }, name, netAccount, null, v.cost || 0, v.dol, v.leb || 0]);
+    const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : C.rowAlt;
+    row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      const col = driverCols[colNum - 1];
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: col.manual ? YELLOW : bandColor } };
+      cell.alignment = { horizontal: col.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+      cell.border = col.manual ? manualBorder : cellBorder;
+      if (col.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+      if (col.fmt === 'leb')    cell.numFmt = '#,##0';
+      if (colNum === 2) cell.font = { bold: true };
+    });
+  });
+
+  const driverTotalRowIdx = dSheet.rowCount + 1;
+  const dTotalRow = dSheet.addRow(['', `${t('settlementGrandTotalLabel')} (${driverEntries.length})`,
+    { formula: `SUM(C4:C${driverTotalRowIdx - 1})` }, { formula: `SUM(D4:D${driverTotalRowIdx - 1})` },
+    { formula: `SUM(E4:E${driverTotalRowIdx - 1})` }, { formula: `SUM(F4:F${driverTotalRowIdx - 1})` },
+    { formula: `SUM(G4:G${driverTotalRowIdx - 1})` }]);
+  dTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+    const col = driverCols[colNum - 1];
+    cell.font = { bold: true, color: { argb: C.ink } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EDFF' } };
+    cell.alignment = { horizontal: colNum === 2 ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'medium', color: { argb: C.blue } }, bottom: { style: 'thin', color: { argb: C.blue } }, left: { style: 'thin', color: { argb: C.blue } }, right: { style: 'thin', color: { argb: C.blue } } };
+    if (col?.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+    if (col?.fmt === 'leb')    cell.numFmt = '#,##0';
+  });
+  dTotalRow.height = 20;
+  dSheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: driverCols.length } };
+
+  // ---- Sheet 2: Companies & Contractors Settlement ----
+  const compCols = [
+    { label: '#',                                        fmt: 'number' },
+    { label: t('company'),                               fmt: 'text'   },
+    { label: t('settlementColCompanyValueDollar'),       fmt: 'dollar' },
+    { label: t('settlementColCompanyValueLeb'),          fmt: 'leb'    },
+    { label: t('contractor'),                            fmt: 'text'   },
+    { label: t('settlementColContractorValueDollar'),    fmt: 'dollar' },
+    { label: t('settlementColContractorFee'),            fmt: 'dollar' },
+    { label: t('settlementColContractorNet'),            fmt: 'dollar' },
+    { label: t('settlementColContractorValueLeb'),       fmt: 'leb'    },
+    { label: t('settlementColNetValueDollar'),           fmt: 'dollar' },
+    { label: t('settlementColNetValueLeb'),              fmt: 'leb'    },
+    { label: t('settlementColOldBalanceDollar'),         fmt: 'dollar', manual: true },
+    { label: t('settlementColOldBalanceLL'),             fmt: 'leb',    manual: true },
+    { label: t('settlementColFinalDollar'),              fmt: 'dollar' },
+    { label: t('settlementColFinalLeb'),                 fmt: 'leb'    },
+  ];
+  const entities = buildSettlementEntityRows(byCompany, byContractor);
+  const cSheet = workbook.addWorksheet(t('settlementSheetCompanyTitle').slice(0, 31), { views: [{ state: 'frozen', ySplit: 3, rightToLeft: isRTL }] });
+  titleBand(cSheet, compCols.length, t('settlementSheetCompanyTitle'), C.purple, `Exported ${exportedOn}  •  ${entities.length} ${t('company')}`);
+  const cHeaderRow = cSheet.getRow(3);
+  compCols.forEach((c, i) => { cHeaderRow.getCell(i + 1).value = c.label; });
+  headerRowStyle(cHeaderRow, 'FF8A3FE0');
+  cSheet.columns = compCols.map((c, i) => ({ width: i === 1 || i === 4 ? 22 : 15 }));
+
+  entities.forEach((e, idx) => {
+    const companyDol    = e.company?.dol || 0;
+    const companyLeb    = e.company?.leb || 0;
+    const contractorDol = e.contractor?.dol || 0;
+    const contractorFee = e.contractor?.cost || 0;
+    const contractorNet = contractorDol - contractorFee;
+    const contractorLeb = e.contractor?.leb || 0;
+    const netDol = companyDol - contractorNet;
+    const netLeb = companyLeb - contractorLeb;
+
+    const row = cSheet.addRow([
+      { formula: 'ROW()-3' },
+      e.company ? e.name : '-', companyDol, companyLeb,
+      e.contractor ? e.name : '-', contractorDol, contractorFee, contractorNet, contractorLeb,
+      netDol, netLeb, null, null, null, null,
+    ]);
+    const rowIdx = row.number;
+    row.getCell(14).value = { formula: `J${rowIdx}+L${rowIdx}` };
+    row.getCell(15).value = { formula: `K${rowIdx}+M${rowIdx}` };
+
+    const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF3EBFF';
+    row.eachCell({ includeEmpty: true }, (cell, colNum) => {
+      const col = compCols[colNum - 1];
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: col.manual ? YELLOW : bandColor } };
+      cell.alignment = { horizontal: col.fmt === 'text' ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+      cell.border = col.manual ? manualBorder : cellBorder;
+      if (col.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+      if (col.fmt === 'leb')    cell.numFmt = '#,##0';
+      if (colNum === 2 || colNum === 5) cell.font = { bold: true };
+    });
+  });
+
+  const compTotalRowIdx = cSheet.rowCount + 1;
+  const colLetterAt = i => String.fromCharCode(65 + i);
+  const sumFormula = (colIdx) => ({ formula: `SUM(${colLetterAt(colIdx)}4:${colLetterAt(colIdx)}${compTotalRowIdx - 1})` });
+  const cTotalRow = cSheet.addRow([
+    '', `${t('total')} (${entities.length})`, sumFormula(2), sumFormula(3), '',
+    sumFormula(5), sumFormula(6), sumFormula(7), sumFormula(8),
+    sumFormula(9), sumFormula(10), sumFormula(11), sumFormula(12), sumFormula(13), sumFormula(14),
+  ]);
+  cTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+    const col = compCols[colNum - 1];
+    cell.font = { bold: true, color: { argb: C.ink } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFE4FF' } };
+    cell.alignment = { horizontal: colNum === 2 ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' };
+    cell.border = { top: { style: 'medium', color: { argb: 'FFB368FF' } }, bottom: { style: 'thin', color: { argb: 'FFB368FF' } }, left: { style: 'thin', color: { argb: 'FFB368FF' } }, right: { style: 'thin', color: { argb: 'FFB368FF' } } };
+    if (col?.fmt === 'dollar') cell.numFmt = '"$"#,##0.00';
+    if (col?.fmt === 'leb')    cell.numFmt = '#,##0';
+  });
+  cTotalRow.height = 20;
+  cSheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: compCols.length } };
+
+  // ---- Manual-entry legend on both sheets ----
+  [dSheet, cSheet].forEach(sheet => {
+    const noteRowIdx = sheet.rowCount + 2;
+    const colCount = sheet.columnCount;
+    sheet.mergeCells(noteRowIdx, 1, noteRowIdx, colCount);
+    const noteCell = sheet.getCell(noteRowIdx, 1);
+    noteCell.value = t('settlementManualInputNote');
+    noteCell.font = { italic: true, size: 9, color: { argb: 'FF8A7A2E' } };
+    noteCell.alignment = { horizontal: isRTL ? 'right' : 'left', wrapText: true };
+  });
+
+  // ---- Overall settlement summary (below the driver table) ----
+  const companiesNetDolFormula = `'${cSheet.name}'!J${compTotalRowIdx}`;
+  const companiesNetLebFormula = `'${cSheet.name}'!K${compTotalRowIdx}`;
+  const companiesFinalDolFormula = `'${cSheet.name}'!N${compTotalRowIdx}`;
+  const companiesFinalLebFormula = `'${cSheet.name}'!O${compTotalRowIdx}`;
+  const contractorFeeTotalFormula = `'${cSheet.name}'!G${compTotalRowIdx}`;
+
+  let sumRow = dSheet.rowCount + 3;
+  const addSummaryRow = (labelKey, dollarFormula, lebFormula, color) => {
+    dSheet.mergeCells(sumRow, 1, sumRow, 4);
+    const labelCell = dSheet.getCell(sumRow, 1);
+    labelCell.value = t(labelKey);
+    labelCell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    labelCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+    labelCell.alignment = { vertical: 'middle', horizontal: isRTL ? 'right' : 'left', indent: 1 };
+
+    const dolCell = dSheet.getCell(sumRow, 5);
+    dolCell.value = dollarFormula ? { formula: dollarFormula } : '';
+    dolCell.numFmt = '"$"#,##0.00';
+    dolCell.font = { bold: true, size: 12, color: { argb: C.ink } };
+    dolCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+    dolCell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    if (lebFormula) {
+      dSheet.mergeCells(sumRow, 6, sumRow, 7);
+      const lebCell = dSheet.getCell(sumRow, 6);
+      lebCell.value = { formula: lebFormula };
+      lebCell.numFmt = '#,##0';
+      lebCell.font = { bold: true, size: 12, color: { argb: C.ink } };
+      lebCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
+      lebCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    }
+    dSheet.getRow(sumRow).height = 22;
+    sumRow++;
+  };
+
+  dSheet.mergeCells(sumRow, 1, sumRow, driverCols.length);
+  const summaryTitleCell = dSheet.getCell(sumRow, 1);
+  summaryTitleCell.value = t('settlementSummaryTitle');
+  summaryTitleCell.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+  summaryTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.brand } };
+  summaryTitleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  dSheet.getRow(sumRow).height = 26;
+  sumRow += 2;
+
+  addSummaryRow('settlementNetCompaniesLabel',      companiesNetDolFormula,   companiesNetLebFormula,   C.purple);
+  addSummaryRow('settlementCompaniesFinalLabel',    companiesFinalDolFormula, companiesFinalLebFormula, C.purple);
+  addSummaryRow('settlementOfficeProfitLabel',      `C${driverTotalRowIdx}-(${companiesNetDolFormula})`, null, C.green);
+  addSummaryRow('settlementDriverProfitTotalLabel', `E${driverTotalRowIdx}`,  null, C.green);
+  addSummaryRow('settlementContractorProfitTotalLabel', contractorFeeTotalFormula, null, C.green);
+  const combinedRow = sumRow;
+  addSummaryRow('settlementCombinedProfitLabel', `E${combinedRow - 3}+E${combinedRow - 2}+E${combinedRow - 1}`, null, C.brandDark);
+
+  sumRow += 1;
+  dSheet.mergeCells(sumRow, 1, sumRow, driverCols.length);
+  const footnoteCell = dSheet.getCell(sumRow, 1);
+  footnoteCell.value = t('settlementFootnote');
+  footnoteCell.font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
+  footnoteCell.alignment = { horizontal: isRTL ? 'right' : 'left', wrapText: true, vertical: 'middle' };
+  dSheet.getRow(sumRow).height = 34;
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

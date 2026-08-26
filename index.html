@@ -95,6 +95,9 @@
       <div class="nav-item" onclick="navigate('archive')" data-page="archive">
         <span class="nav-icon" data-icon="archive"></span><span data-nav-label>Archive</span>
       </div>
+      <div class="nav-item" onclick="navigate('import')" data-page="import" id="nav-import">
+        <span class="nav-icon" data-icon="upload"></span><span data-nav-label>Import by Excel</span>
+      </div>
 
       <div class="nav-section-title" id="nav-section-fin" data-nav-section="finance">Finance</div>
       <div class="nav-item" onclick="navigate('debts')" data-page="debts" id="nav-debts">
@@ -330,6 +333,38 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="modal-import-review">
+  <div class="modal" style="max-width:640px;">
+    <div class="modal-header">
+      <h2 class="modal-title" id="import-review-title">Review Import</h2>
+      <button class="modal-close" onclick="closeModal('modal-import-review')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="import-review-stats"></div>
+
+      <div id="import-review-removed-block" style="display:none;">
+        <div class="import-review-section-title" id="import-review-removed-title"></div>
+        <div id="import-review-removed-list" class="import-review-list"></div>
+      </div>
+
+      <div id="import-review-warn-block" style="display:none;">
+        <div class="import-review-section-title" id="import-review-warn-title"></div>
+        <div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.8rem;color:var(--text-2);">
+            <input type="checkbox" id="import-warn-select-all" onchange="toggleImportWarnSelectAll(this.checked)">
+            <span id="import-warn-select-all-label">Include anyway</span>
+          </label>
+        </div>
+        <div id="import-review-warn-list" class="import-review-list"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-import-review')">Cancel</button>
+      <button class="btn btn-primary" id="import-review-confirm-btn" onclick="confirmImportCommit()">Import</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="modal-prompt">
   <div class="modal" style="max-width:400px;">
     <div class="modal-header">
@@ -426,6 +461,7 @@
 <script src="js/countries.js"></script>
 <script src="js/phone.js"></script>
 <script src="js/pages.js"></script>
+<script src="js/import.js"></script>
 <script>
   applyLang();
   initFirebase();

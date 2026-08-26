@@ -304,7 +304,7 @@ async function renderShipments() {
     <div class="fo-row" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
       <div class="form-group fo-f-shipnum" style="margin-bottom:0;min-width:100px;">
         <label class="form-label">${t('shipNumberLabel')} <span style="color:var(--brand)">*</span></label>
-        <input type="number" id="fo-shipnum" class="form-input" placeholder="${t('shipNumPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
+        <input type="text" id="fo-shipnum" class="form-input" placeholder="${t('shipNumPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddOrder();}">
       </div>
       <div class="form-group fo-f-price" style="margin-bottom:0;min-width:110px;">
         <label class="form-label">${t('priceUSD')} <span style="color:var(--brand)">*</span></label>
@@ -349,7 +349,7 @@ async function renderShipments() {
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
       <div class="form-group" style="margin-bottom:0;flex:1;min-width:260px;">
         <label class="form-label">${t('orderNumbersLabel')}</label>
-        <input type="text" id="ba-shipnums" class="form-input" placeholder="${t('orderNumbersPlaceholder')}" onkeydown="if(event.key==='Enter'){event.preventDefault();bulkAssignOrders();}">
+        <input type="text" id="ba-shipnums" class="form-input" placeholder="${t('orderNumbersPlaceholder')}" onkeydown="handleShipNumsKeydown(event)">
       </div>
       <button class="btn btn-quick-add btn-sm" onclick="bulkAssignOrders()" style="height:38px;white-space:nowrap;">${t('assignBtn')}</button>
     </div>
@@ -486,19 +486,25 @@ function updateOrderEntryBars(companyName, driverName, contractorName) {
   }
 }
 
-/** True if a shipment with this ship number already exists for this company — queried directly
- *  against Firestore (not the local cache) so the check is accurate no matter which page the
- *  user is creating the order from. Skipped (returns false) when there's no company to compare
- *  against, or if the check itself fails — never blocks a save due to a network hiccup. */
+/** True if a shipment with this ship number already exists for this company. Ship numbers
+ *  may be stored as either a plain number (older records) or a string (now that letters are
+ *  allowed), so this checks both representations of the given value against Firestore — not
+ *  the local cache — so the check is accurate no matter which page the user is creating the
+ *  order from. Skipped (returns false) when there's no company to compare against, or if the
+ *  check itself fails — never blocks a save due to a network hiccup. */
 async function shipNumberExistsForCompany(shipNumber, companyId) {
   if (!db || !companyId) return false;
+  const str = String(shipNumber).trim();
+  const num = /^-?\d+$/.test(str) ? parseInt(str, 10) : null;
   try {
-    const snap = await db.collection('sonick_shipments')
-      .where('shipNumber', '==', shipNumber)
-      .where('companyId', '==', companyId)
-      .limit(1)
-      .get();
-    return !snap.empty;
+    const queries = [
+      db.collection('sonick_shipments').where('shipNumber', '==', str).where('companyId', '==', companyId).limit(1).get(),
+    ];
+    if (num !== null) {
+      queries.push(db.collection('sonick_shipments').where('shipNumber', '==', num).where('companyId', '==', companyId).limit(1).get());
+    }
+    const snaps = await Promise.all(queries);
+    return snaps.some(snap => !snap.empty);
   } catch (e) {
     console.warn('Duplicate ship-number check failed:', e.message);
     return false;
@@ -511,8 +517,8 @@ async function quickAddOrder() {
   if (!fixed) return;
 
   const shipNumberRaw = document.getElementById('fo-shipnum')?.value;
-  const shipNumber    = parseInt(shipNumberRaw, 10);
-  if (!shipNumberRaw || isNaN(shipNumber)) { toast(t('shipNumRequired'), 'error'); return; }
+  const shipNumber    = (shipNumberRaw || '').trim();
+  if (!shipNumber) { toast(t('shipNumRequired'), 'error'); return; }
 
   if (await shipNumberExistsForCompany(shipNumber, fixed.companyId)) {
     toast(t('duplicateShipNumber'), 'error');
@@ -594,13 +600,34 @@ async function quickAddOrder() {
  *     so the admin explicitly opts in per order before anything is overwritten.
  *   - Matched shipments with no conflicting existing assignment are applied immediately.
  */
+function handleShipNumsKeydown(event) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    bulkAssignOrders();
+    return;
+  }
+  // Numpad decimal key (prints "." with NumLock on, "Delete" printed on the keycap)
+  // is much easier for operators to hit repeatedly than the real comma key —
+  // swap it for a comma automatically.
+  if (event.key === '.' || event.code === 'NumpadDecimal') {
+    event.preventDefault();
+    const input = event.target;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    input.value = input.value.slice(0, start) + ',' + input.value.slice(end);
+    const pos = start + 1;
+    input.setSelectionRange(pos, pos);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+
 async function bulkAssignOrders() {
   const fixed = window._bulkAssignFixed;
   if (!fixed) return;
 
   const raw  = document.getElementById('ba-shipnums')?.value || '';
   const nums = [...new Set(
-    raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+    raw.split(',').map(s => s.trim()).filter(Boolean)
   )];
   if (!nums.length) { toast(t('orderNumbersRequired'), 'error'); return; }
 
@@ -616,7 +643,7 @@ async function bulkAssignOrders() {
   const matched  = [];
   const notFound = [];
   nums.forEach(n => {
-    const hits = allShips.filter(s => s.shipNumber === n);
+    const hits = allShips.filter(s => String(s.shipNumber).trim() === n);
     if (hits.length) matched.push(...hits); else notFound.push(n);
   });
 
@@ -764,7 +791,7 @@ function shipSummaryLineHTML({ totalDol, totalLeb, profitLabel, profitValue, pro
 function filterShipments() {
   const searchRaw  = (document.getElementById('ship-search')?.value || '').trim();
   const searchNums = searchRaw.includes(',')
-    ? [...new Set(searchRaw.split(',').map(v => parseInt(v.trim(), 10)).filter(n => !isNaN(n)))]
+    ? [...new Set(searchRaw.split(',').map(v => v.trim()).filter(Boolean))]
     : null;
   const search     = searchRaw.toLowerCase();
   const phoneSearch = (document.getElementById('ship-phone-search')?.value || '').trim();
@@ -781,7 +808,7 @@ function filterShipments() {
 
   let ships = (window._allShips || []).filter(s => {
     if (searchNums) {
-      if (!searchNums.includes(s.shipNumber)) return false;
+      if (!searchNums.includes(String(s.shipNumber).trim())) return false;
     } else if (search && !(
       (s.shipNumber + '').includes(search) ||
       (s.customerName  || '').toLowerCase().includes(search) ||
@@ -1074,7 +1101,7 @@ function formatLebStat(value) {
 // ===== INLINE CELL EDITING (double-click a shipments row cell) =====
 /** Maps an editable field name to how its inline editor should be rendered. */
 const INLINE_EDIT_FIELDS = {
-  shipNumber:    { kind: 'number' },
+  shipNumber:    { kind: 'text'   },
   customerName:  { kind: 'text'   },
   customerPhone: { kind: 'text'   },
   customerAddress: { kind: 'text' },
@@ -1219,7 +1246,7 @@ async function saveInlineField(id, field, value, onFail, extraPayload) {
     // Same idea as contractorDeliveryCost above, but for the driver side.
     payload.driverDeliveryCost = value ? (obj?.deliveryCost || 0) : 0;
   } else if (field === 'shipNumber') {
-    payload.shipNumber = parseInt(value, 10) || 0;
+    payload.shipNumber = (value || '').toString().trim();
   } else {
     payload[field] = value;
   }
@@ -1265,7 +1292,7 @@ function shipmentFormHTML(data) {
   <div class="form-row">
     <div class="form-group">
       <label class="form-label">${t('shipNumberLabel')} <span style="color:var(--brand)">*</span></label>
-      <input type="number" id="f-shipnum" class="form-input" value="${d.shipNumber || ''}" placeholder="${t('shipNumPlaceholder')}">
+      <input type="text" id="f-shipnum" class="form-input" value="${esc(d.shipNumber ?? '')}" placeholder="${t('shipNumPlaceholder')}">
     </div>
     <div class="form-group">
       <label class="form-label">${t('date')} <span style="color:var(--brand)">*</span></label>
@@ -1476,7 +1503,7 @@ async function saveShipment() {
   const driverObj     = drivers_cache.find(d   => d.id   === driverId);
   const contractorObj = contractors_cache.find(c  => c.id  === contractorId);
 
-  const shipNum = parseInt(document.getElementById('f-shipnum')?.value) || 0;
+  const shipNum = (document.getElementById('f-shipnum')?.value || '').trim();
   if (!shipNum) { toast(t('shipNumRequired'), 'error'); return; }
 
   const statusVal = document.getElementById('f-status')?.value || 'Pending';
@@ -1860,7 +1887,7 @@ function archivedDateStr(s) {
 function filterArchive() {
   const searchRaw   = (document.getElementById('arch-search')?.value || '').trim();
   const searchNums  = searchRaw.includes(',')
-    ? [...new Set(searchRaw.split(',').map(v => parseInt(v.trim(), 10)).filter(n => !isNaN(n)))]
+    ? [...new Set(searchRaw.split(',').map(v => v.trim()).filter(Boolean))]
     : null;
   const search      = searchRaw.toLowerCase();
   const phoneSearch = (document.getElementById('arch-phone-search')?.value || '').trim();
@@ -1877,7 +1904,7 @@ function filterArchive() {
 
   let ships = (window._allArchShips || []).filter(s => {
     if (searchNums) {
-      if (!searchNums.includes(s.shipNumber)) return false;
+      if (!searchNums.includes(String(s.shipNumber).trim())) return false;
     } else if (search && !(
       (s.shipNumber + '').includes(search) ||
       (s.customerName    || '').toLowerCase().includes(search) ||
@@ -2377,6 +2404,9 @@ function openEntityGeneralReport() {
 // ===================================================
 //  GENERAL REPORT
 // ===================================================
+let _mergedReportCollapsed = true; // Merged Company/Contractor section starts shrunk on the General Report page; persists across renderGeneral() re-renders (module-level, not reset per render)
+let _reportSectionsCollapsed = { driver: true, contractor: true, company: true }; // By Driver/Contractor/Company sections start shrunk too, same as the merged section; persists across renderGeneral() re-renders
+
 async function renderGeneral() {
   if (!can('canViewGeneral')) { renderAccessDenied(); return; }
   const content = document.getElementById('page-content');
@@ -2497,13 +2527,15 @@ async function renderGeneral() {
 
   const mergedSectionHTML = mergedEntries.length ? `
   <div class="merged-report">
-    <div class="merged-report-intro">
+    <div class="merged-report-intro" style="cursor:pointer;" onclick="toggleMergedReportSection()">
       <div class="merged-report-intro-icon">🔗</div>
-      <div>
+      <div style="flex:1;">
         <div class="merged-report-intro-title">${t('mergedTitle')}</div>
         <div class="merged-report-intro-sub">${t('mergedSubtitle')}</div>
       </div>
+      <span id="merged-report-toggle-icon" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_mergedReportCollapsed ? '0' : '180'}deg);">▾</span>
     </div>
+    <div id="merged-report-body" style="display:${_mergedReportCollapsed ? 'none' : 'block'};">
     <div class="merged-cards-grid">
       ${mergedEntries.map(e => {
         const settleClass = e.netSettlement > 0.005 ? 'owe-them' : (e.netSettlement < -0.005 ? 'owe-us' : 'even');
@@ -2553,12 +2585,14 @@ async function renderGeneral() {
         <div class="value" style="color:var(--green);">$${formatNum(mergedTotalProfit)}</div>
       </div>
     </div>` : ''}
+    </div>
   </div>
   ` : '';
 
   content.innerHTML = `
   ${pageHeader(t('generalReport'), [t('finance')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportGeneralReportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
-      <button class="btn btn-secondary btn-sm" onclick="exportGeneralReportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : '')}
+      <button class="btn btn-secondary btn-sm" onclick="exportGeneralReportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>
+      ${showProfit ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : ''}` : '')}
   <div class="stats-grid" style="margin-bottom:24px;">
     <div class="stat-card brand"><div class="stat-icon brand">${ICONS.package}</div><div class="stat-label">${t('totalShipments')}</div><div class="stat-value">${ships.length}</div></div>
     <div class="stat-card blue"><div class="stat-icon blue">${ICONS.download}</div><div class="stat-label">${t('incomeDollar')}</div><div class="stat-value mono">$${formatNum(incomeDol)}</div></div>
@@ -2567,10 +2601,13 @@ async function renderGeneral() {
     ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.upload}</div><div class="stat-label">${t('outcomeDriversContractorsLeb')}</div><div class="stat-value mono">${formatLebStat(outcomeLeb)}</div></div>` : ''}
     ${showProfit ? `<div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('netProfit')}</div><div class="stat-value mono">$${formatNum(netProfit)}</div></div>` : ''}
   </div>
-  ${mergedSectionHTML}
   <div style="display:grid;grid-template-columns:1fr;gap:16px;margin-bottom:16px;" class="report-grid">
     <div class="table-container">
-      <div class="card-header"><span class="card-title">${t('byDriver')}</span></div>
+      <div class="card-header" style="cursor:pointer;" onclick="toggleReportSection('driver')">
+        <span class="card-title">${t('byDriver')}</span>
+        <span id="report-section-toggle-driver" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_reportSectionsCollapsed.driver ? '0' : '180'}deg);">▾</span>
+      </div>
+      <div id="report-section-body-driver" style="display:${_reportSectionsCollapsed.driver ? 'none' : 'block'};">
       <div class="table-scroll">
       <table><thead><tr><th>${t('driver')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('driverIncomeCol')}</th>${showProfit?`<th>${t('driverProfitCol')}</th><th>${t('driverTotalCol')}</th>`:''}${driverHasLeb?`<th>${t('driverTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byDriver).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
@@ -2578,9 +2615,14 @@ async function renderGeneral() {
         || `<tr><td colspan="${(showProfit?6:4)+(driverHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
       </tbody>${(() => { const d = Object.entries(byDriver).filter(([k])=>k!=='—'); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${driverHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
+      </div>
     </div>
     <div class="table-container">
-      <div class="card-header"><span class="card-title">${t('byContractor')}</span></div>
+      <div class="card-header" style="cursor:pointer;" onclick="toggleReportSection('contractor')">
+        <span class="card-title">${t('byContractor')}</span>
+        <span id="report-section-toggle-contractor" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_reportSectionsCollapsed.contractor ? '0' : '180'}deg);">▾</span>
+      </div>
+      <div id="report-section-body-contractor" style="display:${_reportSectionsCollapsed.contractor ? 'none' : 'block'};">
       <div class="table-scroll">
       <table><thead><tr><th>${t('contractor')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('contractorIncomeCol')}</th>${showProfit?`<th>${t('contractorProfitCol')}</th><th>${t('contractorTotalCol')}</th>`:''}${contractorHasLeb?`<th>${t('contractorTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byContractor).filter(([k])=>k!=='—').sort((a,b)=>b[1].count-a[1].count).map(([k,v])=>`
@@ -2588,9 +2630,14 @@ async function renderGeneral() {
         || `<tr><td colspan="${(showProfit?6:4)+(contractorHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
       </tbody>${(() => { const d = Object.entries(byContractor).filter(([k])=>k!=='—'); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${contractorHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
+      </div>
     </div>
     <div class="table-container">
-      <div class="card-header"><span class="card-title">${t('byCompany')}</span></div>
+      <div class="card-header" style="cursor:pointer;" onclick="toggleReportSection('company')">
+        <span class="card-title">${t('byCompany')}</span>
+        <span id="report-section-toggle-company" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_reportSectionsCollapsed.company ? '0' : '180'}deg);">▾</span>
+      </div>
+      <div id="report-section-body-company" style="display:${_reportSectionsCollapsed.company ? 'none' : 'block'};">
       <div class="table-scroll">
       <table><thead><tr><th>${t('company')}</th><th>${t('count')}</th><th>${t('statusBreakdownCol')}</th><th>${t('companyOutcomeCol')}</th>${showProfit?`<th>${t('companyProfitCol')}</th><th>${t('companyTotalCol')}</th>`:''}${companyHasLeb?`<th>${t('companyTotalColLeb')}</th>`:''}</tr></thead><tbody>
         ${Object.entries(byCompany).sort((a,b)=>b[1].dol-a[1].dol).map(([k,v])=>`
@@ -2598,9 +2645,34 @@ async function renderGeneral() {
         || `<tr><td colspan="${(showProfit?6:4)+(companyHasLeb?1:0)}" class="table-empty"><p>No data</p></td></tr>`}
       </tbody>${(() => { const d = Object.entries(byCompany); if (!d.length) return ''; const s = sumRows(d); return `<tfoot><tr class="report-total-row"><td><strong>${t('total')}</strong></td><td class="font-mono"><strong>${s.count}</strong></td><td>${statusBreakdownCell(s.statusCounts)}</td><td class="font-mono"><strong>$${formatNum(s.dol)}</strong></td>${showProfit?`<td class="font-mono" style="color:var(--green);"><strong>$${formatNum(s.second)}</strong></td><td class="font-mono"><strong>$${formatNum(s.dol - s.second)}</strong></td>`:''}${companyHasLeb?`<td class="font-mono"><strong>${formatNum(s.leb)}</strong></td>`:''}</tr></tfoot>`; })()}</table>
       </div>
+      </div>
     </div>
   </div>
+  ${mergedSectionHTML}
   <style>@media(max-width:768px){.report-grid{grid-template-columns:1fr;}}</style>`;
+}
+
+/** Expand/collapse one of the By Driver/Contractor/Company sections on the General Report
+ *  page. Starts shrunk (_reportSectionsCollapsed = all true), same as the Merged Company/
+ *  Contractor section; state persists across renderGeneral() re-renders since the flag
+ *  lives at module scope, not inside the function. */
+function toggleReportSection(key) {
+  _reportSectionsCollapsed[key] = !_reportSectionsCollapsed[key];
+  const body = document.getElementById(`report-section-body-${key}`);
+  const icon = document.getElementById(`report-section-toggle-${key}`);
+  if (body) body.style.display = _reportSectionsCollapsed[key] ? 'none' : 'block';
+  if (icon) icon.style.transform = `rotate(${_reportSectionsCollapsed[key] ? '0' : '180'}deg)`;
+}
+
+/** Expand/collapse the Merged Company/Contractor reconciliation section on the General
+ *  Report page. Starts shrunk (_mergedReportCollapsed = true); state persists across
+ *  renderGeneral() re-renders since the flag lives at module scope, not inside the function. */
+function toggleMergedReportSection() {
+  _mergedReportCollapsed = !_mergedReportCollapsed;
+  const body = document.getElementById('merged-report-body');
+  const icon = document.getElementById('merged-report-toggle-icon');
+  if (body) body.style.display = _mergedReportCollapsed ? 'none' : 'block';
+  if (icon) icon.style.transform = `rotate(${_mergedReportCollapsed ? '0' : '180'}deg)`;
 }
 
 // ===================================================
@@ -3061,11 +3133,13 @@ async function renderUsers() {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
         ${Object.entries(ROLES).map(([key, role]) => `
         <div style="background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);padding:14px;">
-          <div style="font-weight:600;font-size:14px;margin-bottom:8px;color:${key==='admin'?'var(--brand-light)':key==='manager'?'var(--amber)':key==='operator'?'var(--blue)':'var(--text-2)'};">${role.label}</div>
-          <div style="font-size:11px;color:var(--text-3);display:flex;flex-direction:column;gap:3px;">
+          <div style="font-weight:600;font-size:14px;margin-bottom:8px;color:${key==='admin'?'var(--brand-light)':key==='manager'?'var(--amber)':key==='operator'?'var(--blue)':key==='custom'?'var(--purple)':'var(--text-2)'};">${role.label}</div>
+          ${key === 'custom'
+            ? `<div style="font-size:11px;color:var(--text-3);font-style:italic;">${esc(t('customRoleGridNote'))}</div>`
+            : `<div style="font-size:11px;color:var(--text-3);display:flex;flex-direction:column;gap:3px;">
             ${Object.entries(role).filter(([k])=>k!=='label').map(([k,v])=>`
             <span style="color:${v?'var(--green)':'var(--text-3)'}">${v?'✓':'✗'} ${k.replace('can','').replace(/([A-Z])/g,' $1').trim()}</span>`).join('')}
-          </div>
+          </div>`}
         </div>`).join('')}
       </div>
     </div>
@@ -3080,7 +3154,7 @@ async function renderUsers() {
       <strong>${esc(u.displayName||'—')}</strong>
     </div></td>
     <td style="color:var(--text-2);">${esc(u.email||'—')}</td>
-    <td><span class="badge ${u.role==='admin'?'badge-brand':u.role==='manager'?'badge-amber':u.role==='operator'?'badge-blue':'badge-gray'}">${(ROLES[u.role]||{label:u.role||'?'}).label}</span></td>
+    <td><span class="badge ${u.role==='admin'?'badge-brand':u.role==='manager'?'badge-amber':u.role==='operator'?'badge-blue':u.role==='custom'?'badge-purple':'badge-gray'}">${(ROLES[u.role]||{label:u.role||'?'}).label}</span></td>
     <td>${u.active!==false?`<span class="badge badge-green">${t('activeLabel')}</span>`:`<span class="badge badge-red">${t('inactiveLabel')}</span>`}</td>
     <td><div style="display:flex;gap:4px;">
       <button class="btn btn-ghost  btn-sm btn-icon" onclick="editUser('${u.id}')">✏️</button>
@@ -3092,15 +3166,17 @@ async function renderUsers() {
 function userFormHTML(d) {
   d = d || {};
   const isNew = !d.id;
+  const initialRole = d.role || 'admin';
   return `
   <div class="form-group"><label class="form-label">Display Name <span style="color:var(--brand)">*</span></label><input type="text" id="uf-name" class="form-input" value="${esc(d.displayName||'')}" placeholder="Full name"></div>
   <div class="form-group"><label class="form-label">Email <span style="color:var(--brand)">*</span></label><input type="email" id="uf-email" class="form-input" value="${esc(d.email||'')}" placeholder="user@example.com" ${!isNew?'readonly':''}></div>
   ${isNew?`<div class="form-group"><label class="form-label">Temporary Password <span style="color:var(--brand)">*</span></label><input type="password" id="uf-pass" class="form-input" placeholder="Min 6 characters"></div>`:''}
   <div class="form-group"><label class="form-label">Role <span style="color:var(--brand)">*</span></label>
-    <select id="uf-role" class="form-select">
-      ${Object.entries(ROLES).map(([k,r])=>`<option value="${k}" ${d.role===k?'selected':''}>${r.label}</option>`).join('')}
+    <select id="uf-role" class="form-select" onchange="onUserRoleChange()">
+      ${Object.entries(ROLES).map(([k,r])=>`<option value="${k}" ${initialRole===k?'selected':''}>${r.label}</option>`).join('')}
     </select>
   </div>
+  <div id="uf-perms-section">${userPermsChecklistHTML(initialRole)}</div>
   <div class="form-group"><label class="form-label">Status</label>
     <select id="uf-active" class="form-select">
       <option value="true"  ${d.active!==false?'selected':''}>${t('activeLabel')}</option>
@@ -3109,8 +3185,43 @@ function userFormHTML(d) {
   </div>`;
 }
 
+/** Checkbox grid for the "Custom" role — only rendered when that role is selected in the
+ *  form. Starting checked-state comes from (in priority order): the user's own saved
+ *  customPermissions if they're already Custom, otherwise the fixed permission set of
+ *  whatever role they had before switching to Custom (so an admin tweaking an existing
+ *  Manager into Custom starts from Manager's permissions, not a blank slate), otherwise
+ *  (a brand-new user) every box starts unchecked. */
+function userPermsChecklistHTML(selectedRole) {
+  if (selectedRole !== 'custom') return '';
+  const orig = _editingUserData || {};
+  const base = (orig.role === 'custom' && orig.customPermissions) ? orig.customPermissions : (ROLES[orig.role] || {});
+  return `
+  <div class="form-group">
+    <label class="form-label">${esc(t('customPermissionsLabel'))}</label>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 14px;padding:12px;background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);">
+      ${PERMISSION_KEYS.map(k => `
+      <label style="display:flex;align-items:center;gap:8px;font-size:0.83rem;cursor:pointer;margin:0;">
+        <input type="checkbox" class="uf-perm-check" data-perm="${k}" ${base[k] ? 'checked' : ''}>
+        ${esc(t(PERMISSION_LABEL_KEYS[k] || k))}
+      </label>`).join('')}
+    </div>
+  </div>`;
+}
+
+/** Re-renders the permissions checklist whenever the Role dropdown changes, so picking
+ *  "Custom" reveals it (pre-filled from the user's original role, see above) and picking
+ *  any fixed role hides it again. */
+function onUserRoleChange() {
+  const role = document.getElementById('uf-role')?.value;
+  const section = document.getElementById('uf-perms-section');
+  if (section) section.innerHTML = userPermsChecklistHTML(role);
+}
+
+let _editingUserData = null; // the user record currently open in the New/Edit User modal, kept for userPermsChecklistHTML()'s pre-fill logic
+
 function openUserModal(d) {
   editingId = d?.id || null;
+  _editingUserData = d || {};
   document.getElementById('modal-user-title').textContent = d ? t('editUser') : t('newUser');
   document.getElementById('modal-user-body').innerHTML    = userFormHTML(d);
   openModal('modal-user');
@@ -3128,11 +3239,18 @@ async function saveUser() {
   const active = document.getElementById('uf-active')?.value === 'true';
   if (!name || !email) { toast(t('nameEmailRequired'), 'error'); return; }
 
+  // Custom permissions only apply (and are only saved) when Role is set to Custom —
+  // switching a user back to a fixed role clears any previously saved custom set so it
+  // doesn't linger unused on their record.
+  const customPermissions = role === 'custom'
+    ? Object.fromEntries(PERMISSION_KEYS.map(k => [k, !!document.querySelector(`.uf-perm-check[data-perm="${k}"]`)?.checked]))
+    : null;
+
   const ts = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
 
   if (editingId) {
     try {
-      if (db) await db.collection('sonick_users').doc(editingId).update({ displayName: name, role, active, updatedAt: ts });
+      if (db) await db.collection('sonick_users').doc(editingId).update({ displayName: name, role, customPermissions, active, updatedAt: ts });
       toast(t('userUpdated'), 'success'); closeModal('modal-user'); renderUsers();
     } catch (e) { toast(t('error') + e.message, 'error'); }
   } else {
@@ -3151,7 +3269,7 @@ async function saveUser() {
         await cred.user.updateProfile({ displayName: name });
         await secAuth.signOut();
       } catch (authErr) { console.warn('Auth creation note:', authErr.message); toast('Note: ' + authErr.message, 'info'); }
-      if (db) await db.collection('sonick_users').doc(uid).set({ displayName: name, email, role, active, createdAt: ts, createdBy: currentUserData?.id });
+      if (db) await db.collection('sonick_users').doc(uid).set({ displayName: name, email, role, customPermissions, active, createdAt: ts, createdBy: currentUserData?.id });
       toast(t('userCreated'), 'success'); closeModal('modal-user'); renderUsers();
     } catch (e) { toast(t('error') + e.message, 'error'); }
   }

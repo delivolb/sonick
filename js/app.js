@@ -61,12 +61,47 @@ const ROLES = {
     canViewProfit: false, canManageCompanies: false, canManageContractors: false, canManageDrivers: false,
     canManageUsers: false, canViewGeneral: false, canViewDebts: false, canExport: false,
     canManageBackup: false
+  },
+  // Not a fixed permission set — an admin builds this per user (Users → Role → Custom).
+  // The actual on/off values live on that user's own document under `customPermissions`;
+  // this entry only supplies the display label. can() and the Users page both branch on
+  // role === 'custom' before ever consulting this object for permissions.
+  custom: {
+    label: 'Custom',
   }
+};
+
+/** Every togglable permission, in the order shown throughout the Users page's checklists
+ *  and the Role Permissions preview — sourced from the admin role (which has all of them
+ *  set true) so this list can never drift out of sync with ROLES itself. */
+const PERMISSION_KEYS = Object.keys(ROLES.admin).filter(k => k !== 'label');
+
+/** i18n key for each permission's checkbox label in the Users page's custom-role checklist
+ *  and the Role Permissions preview grid. */
+const PERMISSION_LABEL_KEYS = {
+  canViewShipments:    'permViewShipments',
+  canCreateShipments:  'permCreateShipments',
+  canEditShipments:    'permEditShipments',
+  canDeleteShipments:  'permDeleteShipments',
+  canArchive:          'permArchive',
+  canViewFinance:      'permViewFinance',
+  canViewProfit:       'permViewProfit',
+  canManageCompanies:  'permManageCompanies',
+  canManageContractors:'permManageContractors',
+  canManageDrivers:    'permManageDrivers',
+  canManageUsers:      'permManageUsers',
+  canViewGeneral:      'permViewGeneral',
+  canViewDebts:        'permViewDebts',
+  canExport:           'permExport',
+  canManageBackup:     'permManageBackup',
 };
 
 /** Check if current user has a given permission */
 function can(permission) {
   if (!currentUserData) return false;
+  if (currentUserData.role === 'custom') {
+    return !!(currentUserData.customPermissions && currentUserData.customPermissions[permission]);
+  }
   const role = ROLES[currentUserData.role] || ROLES.viewer;
   return !!role[permission];
 }
@@ -110,6 +145,15 @@ async function loadUserData(user) {
       await auth.signOut();
       showLogin();
       toast(t('accountDisabled'), 'error');
+      return;
+    }
+    // Viewer accounts are read-only order-viewing accounts by design — they belong on
+    // the Orders Viewer portal (user.html), not the full admin app. Same sonick_users
+    // account, same credentials; just the other page.
+    if (data.role === 'viewer') {
+      await auth.signOut();
+      showLogin();
+      toast(t('viewerMustUsePortalMsg'), 'error');
       return;
     }
     currentUser     = user;

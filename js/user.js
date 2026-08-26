@@ -59,7 +59,7 @@ const ORDER_TYPE_CONFIG = {
 };
 const ALL_ORDER_TYPES = Object.keys(ORDER_TYPE_CONFIG);
 
-const ROLE_LABEL_KEYS = { admin: 'roleAdmin', manager: 'roleManager', operator: 'roleOperator', viewer: 'roleViewer' };
+const ROLE_LABEL_KEYS = { admin: 'roleAdmin', manager: 'roleManager', operator: 'roleOperator', viewer: 'roleViewer', custom: 'roleCustom' };
 
 const CHEVRON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
 
@@ -425,13 +425,13 @@ function applyUserFilters() {
   const source     = activeTab === 'orders' ? allOrders : allArchive;
   const searchRaw  = (document.getElementById('user-search')?.value || '').trim();
   const searchNums = searchRaw.includes(',')
-    ? [...new Set(searchRaw.split(',').map(v => parseInt(v.trim(), 10)).filter(n => !isNaN(n)))]
+    ? [...new Set(searchRaw.split(',').map(v => v.trim()).filter(Boolean))]
     : null;
   const search = searchRaw.toLowerCase();
 
   const rows = source.filter(s => {
     if (searchNums) {
-      if (!searchNums.includes(s.shipNumber)) return false;
+      if (!searchNums.includes(String(s.shipNumber).trim())) return false;
     } else if (search && !(
       (s.shipNumber + '').includes(search) ||
       (s.customerName    || '').toLowerCase().includes(search) ||
