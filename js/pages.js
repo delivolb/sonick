@@ -3141,9 +3141,15 @@ async function saveUser() {
     try {
       let uid = 'user_' + Date.now();
       try {
-        const cred = await auth.createUserWithEmailAndPassword(email, pass);
+        // Isolated secondary Firebase app, same as createDriverWithPortal() above —
+        // creating a user on the PRIMARY auth instance would immediately sign the
+        // admin in AS that new user (Firebase Auth behavior), kicking them out of
+        // their own session before the new user's Firestore profile even exists.
+        const secAuth = _getSecondaryAuth();
+        const cred    = await secAuth.createUserWithEmailAndPassword(email, pass);
         uid = cred.user.uid;
         await cred.user.updateProfile({ displayName: name });
+        await secAuth.signOut();
       } catch (authErr) { console.warn('Auth creation note:', authErr.message); toast('Note: ' + authErr.message, 'info'); }
       if (db) await db.collection('sonick_users').doc(uid).set({ displayName: name, email, role, active, createdAt: ts, createdBy: currentUserData?.id });
       toast(t('userCreated'), 'success'); closeModal('modal-user'); renderUsers();

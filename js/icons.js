@@ -68,6 +68,11 @@ const ICONS = {
 
   refreshCcw: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px;"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15"/></svg>`,
 
+  filter: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="4 4 20 4 14 12.5 14 19 10 21 10 12.5 4 4"/></svg>`,
+  search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  x: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  smartphone: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>`,
+
   /* Real, brand-colored file-type glyphs (not currentColor line icons like the rest of this
      file) — used on the Export Excel / Export PDF buttons so they read as actual file icons. */
   excelFile: `<svg width="16" height="18" viewBox="0 0 24 28" xmlns="http://www.w3.org/2000/svg" style="vertical-align:-4px;"><path d="M4 2h11l5 5v17a2 2 0 01-2 2H4a2 2 0 01-2-2V4a2 2 0 012-2z" fill="#21A366"/><path d="M15 2v5h5z" fill="#0F7244"/><path d="M6.7 12.3h2.15l1.25 2.15 1.3-2.15h2.15l-2.35 3.55L13.6 19.4h-2.2l-1.35-2.25-1.35 2.25H6.5l2.5-3.55-2.3-3.55z" fill="#fff"/></svg>`,

@@ -132,5 +132,5 @@ function phoneWithFlagHTML(raw) {
   const { iso, dial, national } = parsePhoneValue(raw);
   const country = COUNTRIES.find(c => c.iso === iso);
   const flag = country ? flagImgHTML(country.iso, 'flag-icon-inline') + ' ' : '';
-  return `${flag}${esc('+' + dial + ' ' + national)}`;
+  return `<span dir="ltr">${flag}${esc('+' + dial + ' ' + national)}</span>`;
 }

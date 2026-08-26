@@ -453,6 +453,25 @@ const TRANSLATIONS = {
     driverNotePlaceholder:'Add a note for the office (optional)',
     saveNoteBtn:          'Save Note',
     noteSaved:            'Note saved',
+
+    // ── User (viewer) portal — user.html ──
+    userPortalTitle:      'Orders Viewer',
+    userLoginSubtitle:    'Sign in to browse orders and archive',
+    ordersTabLabel:       'Orders',
+    filtersBtn:           'Filters',
+    applyFiltersBtn:      'Apply Filters',
+    installAppBtn:        'Install App',
+    installBtnShort:      'Install',
+    installBannerText:    'Install this app for quick access from your home screen.',
+    installedBtn:         'Installed',
+    iosInstallHint:       'To install: tap the Share icon, then "Add to Home Screen".',
+    genericInstallHint:   'To install: open your browser menu and choose "Install App" or "Add to Home Screen".',
+    noOrdersMatchFilters: 'No orders match your filters',
+    noArchiveMatchFilters:'No archived orders match your filters',
+    roleAdmin:            'Admin',
+    roleManager:          'Manager',
+    roleOperator:         'Operator',
+    roleViewer:           'Viewer',
   },
 
   ar: {
@@ -905,6 +924,25 @@ const TRANSLATIONS = {
     driverNotePlaceholder:'أضف ملاحظة للمكتب (اختياري)',
     saveNoteBtn:          'حفظ الملاحظة',
     noteSaved:            'تم حفظ الملاحظة',
+
+    // ── User (viewer) portal — user.html ──
+    userPortalTitle:      'عارض الطلبيات',
+    userLoginSubtitle:    'سجّل الدخول لتصفح الطلبيات والأرشيف',
+    ordersTabLabel:       'الطلبيات',
+    filtersBtn:           'الفلاتر',
+    applyFiltersBtn:      'تطبيق الفلاتر',
+    installAppBtn:        'تثبيت التطبيق',
+    installBtnShort:      'تثبيت',
+    installBannerText:    'ثبّت هذا التطبيق للوصول السريع من الشاشة الرئيسية لهاتفك.',
+    installedBtn:         'تم التثبيت',
+    iosInstallHint:       'للتثبيت: اضغط على أيقونة المشاركة، ثم اختر "إضافة إلى الشاشة الرئيسية".',
+    genericInstallHint:   'للتثبيت: افتح قائمة المتصفح واختر "تثبيت التطبيق" أو "إضافة إلى الشاشة الرئيسية".',
+    noOrdersMatchFilters: 'لا توجد طلبيات مطابقة لفلاترك',
+    noArchiveMatchFilters:'لا توجد طلبيات مؤرشفة مطابقة لفلاترك',
+    roleAdmin:            'مسؤول',
+    roleManager:          'مدير',
+    roleOperator:         'مشغّل',
+    roleViewer:           'مُشاهد',
   }
 };
 

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sonick Orders Viewer</title>
+
+<!-- PWA -->
+<link rel="manifest" href="user-manifest.json">
+<meta name="theme-color" content="#0D1224">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sonick Viewer">
+<link rel="apple-touch-icon" href="assets/logo-mark-192.png">
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<!-- Stylesheets -->
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/layout.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/rtl.css">
+<link rel="stylesheet" href="css/user.css">
+
+<link rel="icon" type="image/png" href="assets/logo-mark.png">
+
+<!-- Icon library + theme: load before first paint -->
+<script src="js/icons.js"></script>
+<script src="js/theme.js"></script>
+<!-- Translations only (t() / TRANSLATIONS) — user.js drives its own language toggle -->
+<script src="js/i18n.js"></script>
+<!-- Phone country-code/flag helpers (display only here — read-only customer phone) -->
+<script src="js/countries.js"></script>
+<script src="js/phone.js"></script>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loading-screen">
+  <img class="loading-logo-img logo-full-img" src="assets/logo-full.png" alt="Sonick">
+</div>
+
+<!-- LOGIN -->
+<div id="login-screen" class="hidden">
+  <div class="login-card user-login-card">
+    <div class="login-logo">
+      <img class="login-logo-img logo-full-img user-login-logo-img" src="assets/logo-full.png" alt="Sonick">
+      <h1 id="user-login-title">Orders Viewer</h1>
+      <p id="user-login-subtitle">Sign in to browse orders and archive</p>
+    </div>
+    <div id="login-error" class="login-error hidden"></div>
+    <form id="user-login-form" onsubmit="handleUserLogin(event)">
+      <div class="form-group">
+        <label class="form-label" id="user-label-email">Email</label>
+        <input type="email" id="user-email" class="form-input" placeholder="your@email.com" required autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label class="form-label" id="user-label-password">Password</label>
+        <input type="password" id="user-password" class="form-input" placeholder="••••••••" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary btn-full btn-lg" id="user-login-btn" style="margin-top:8px;">Sign In</button>
+    </form>
+    <div style="text-align:center;margin-top:16px;">
+      <button class="btn btn-ghost btn-sm" onclick="toggleUserLang()" id="user-lang-btn" style="font-weight:700;">AR</button>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="user-app" class="hidden">
+  <header class="user-header">
+    <div class="user-header-id">
+      <img src="assets/logo-mark.png" alt="Sonick">
+      <div style="min-width:0;">
+        <div class="user-header-name" id="user-name-label">—</div>
+        <div class="user-header-sub"><span class="user-role-badge" id="user-role-badge">—</span></div>
+      </div>
+    </div>
+    <div class="user-header-actions">
+      <button class="btn btn-primary btn-sm btn-icon hidden" id="install-header-btn" onclick="handleInstallClick()" title="Install App"><span class="icon-inline" data-icon="smartphone"></span></button>
+      <button class="btn btn-secondary btn-sm btn-icon" id="user-lang-btn-app" onclick="toggleUserLang()" title="EN / AR" style="font-weight:700;">AR</button>
+      <button class="theme-toggle-btn" id="theme-btn" onclick="toggleTheme()" title="Switch to Light Mode"><span data-icon="sun"></span></button>
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="handleUserLogout()" title="Sign Out"><span class="icon-inline" data-icon="logout"></span></button>
+    </div>
+  </header>
+
+  <!-- INSTALL BANNER (shown only when the app can actually be installed, or on iOS via a manual tip) -->
+  <div id="install-banner" class="install-banner hidden">
+    <div class="install-banner-icon"><span data-icon="smartphone"></span></div>
+    <div class="install-banner-text" id="install-banner-text">Install this app for quick access from your home screen.</div>
+    <div class="install-banner-actions">
+      <button class="btn btn-primary btn-sm" id="install-banner-btn" onclick="handleInstallClick()">Install</button>
+      <button class="install-banner-close" onclick="dismissInstallBanner()"><span data-icon="x"></span></button>
+    </div>
+  </div>
+
+  <nav class="user-tabs">
+    <div class="user-tab active" data-tab="orders" onclick="switchUserTab('orders')">
+      <span data-icon="package"></span>
+      <span id="tab-orders-label">Orders</span>
+      <span class="user-tab-count" id="tab-orders-count">0</span>
+    </div>
+    <div class="user-tab" data-tab="archive" onclick="switchUserTab('archive')">
+      <span data-icon="archive"></span>
+      <span id="tab-archive-label">Archive</span>
+      <span class="user-tab-count" id="tab-archive-count">0</span>
+    </div>
+  </nav>
+
+  <div class="user-toolbar">
+    <div class="user-search-wrap">
+      <span class="search-icon-fixed" data-icon="search"></span>
+      <input type="text" id="user-search" placeholder="Search…" oninput="applyUserFilters()">
+    </div>
+    <button type="button" class="filters-btn" id="filters-btn" onclick="openFiltersSheet()">
+      <span data-icon="filter"></span>
+      <span id="filters-btn-label">Filters</span>
+      <span class="filters-btn-dot hidden" id="filters-btn-dot"></span>
+    </button>
+  </div>
+
+  <div class="user-results-line" id="user-results-line"></div>
+
+  <main class="user-content" id="user-content"></main>
+</div>
+
+<!-- FILTER SHEET MODAL -->
+<div class="modal-overlay" id="modal-filters">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-filters-title">Filters</h2>
+      <button class="modal-close" onclick="closeModal('modal-filters')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-filters-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="filters-reset-btn" onclick="resetUserFilters()">Reset filters</button>
+      <button class="btn btn-primary" id="filters-apply-btn" onclick="commitFiltersFromSheet()">Apply Filters</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="js/user.js"></script>
+
+</body>
+</html>
