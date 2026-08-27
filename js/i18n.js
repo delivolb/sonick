@@ -458,6 +458,10 @@ const TRANSLATIONS = {
     impImporting:           'Importing...',
     impImportedSuccessLabel:'order(s) imported successfully',
 
+    /* ── General Statement page (styled on-screen settlement, moved off General Report) ── */
+    generalStatement:                 'General Statement',
+    statementOldBalancePlaceholder:   '0',
+
     /* ── Settlement Statement export (General Report) ── */
     settlementExportBtn:              'Settlement Statement',
     settlementSheetDriverTitle:       'Driver Settlement',
@@ -1037,6 +1041,10 @@ const TRANSLATIONS = {
     impImporting:           'جارٍ الاستيراد...',
     impImportedSuccessLabel:'طلبية تم استيرادها بنجاح',
 
+    /* ── صفحة الكشف العام (عرض تسوية منسّق، نُقل من التقرير العام) ── */
+    generalStatement:                 'الكشف العام',
+    statementOldBalancePlaceholder:   '0',
+
     /* ── تصدير كشف التسوية (التقرير العام) ── */
     settlementExportBtn:              'كشف التسوية',
     settlementSheetDriverTitle:       'كشف حساب السائقين',
@@ -1207,7 +1215,7 @@ function applyLang() {
     home: 'home',
     dashboard: 'dashboard', shipments: 'shipments',
     archive: 'archive', import: 'importExcelTitle',
-    debts: 'debtsPayments', general: 'generalReport',
+    debts: 'debtsPayments', general: 'generalReport', statement: 'generalStatement',
     companies: 'companies', contractors: 'contractors', drivers: 'drivers',
     users: 'users', settings: 'settings', backup: 'backupRestore'
   };

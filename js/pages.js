@@ -379,7 +379,7 @@ async function renderShipments() {
       </div>
       <div class="table-search">
         <span class="search-icon">🔍</span>
-        <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()">
+        <input type="text" placeholder="${t('searchShipments')}" id="ship-search" oninput="filterShipments()" onkeydown="handleDotToCommaKeydown(event)">
       </div>
       ${can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
       <button class="btn btn-secondary btn-sm" onclick="exportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : ''}
@@ -600,15 +600,11 @@ async function quickAddOrder() {
  *     so the admin explicitly opts in per order before anything is overwritten.
  *   - Matched shipments with no conflicting existing assignment are applied immediately.
  */
-function handleShipNumsKeydown(event) {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    bulkAssignOrders();
-    return;
-  }
-  // Numpad decimal key (prints "." with NumLock on, "Delete" printed on the keycap)
-  // is much easier for operators to hit repeatedly than the real comma key —
-  // swap it for a comma automatically.
+// Numpad decimal key (prints "." with NumLock on, "Delete" printed on the keycap)
+// is much easier for operators to hit repeatedly than the real comma key —
+// swap it for a comma automatically. Shared by any multi-number input (bulk
+// assign, shipment/archive number search).
+function handleDotToCommaKeydown(event) {
   if (event.key === '.' || event.code === 'NumpadDecimal') {
     event.preventDefault();
     const input = event.target;
@@ -618,7 +614,18 @@ function handleShipNumsKeydown(event) {
     const pos = start + 1;
     input.setSelectionRange(pos, pos);
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
   }
+  return false;
+}
+
+function handleShipNumsKeydown(event) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    bulkAssignOrders();
+    return;
+  }
+  handleDotToCommaKeydown(event);
 }
 
 async function bulkAssignOrders() {
@@ -1809,7 +1816,7 @@ async function renderArchive() {
     </div>
     <div class="table-search">
       <span class="search-icon">🔍</span>
-      <input type="text" placeholder="${t('searchArchive')}" id="arch-search" oninput="filterArchive()">
+      <input type="text" placeholder="${t('searchArchive')}" id="arch-search" oninput="filterArchive()" onkeydown="handleDotToCommaKeydown(event)">
     </div>
     <button type="button" class="btn btn-secondary btn-sm btn-icon" onclick="resetArchiveFilters()" title="${t('resetFilters')}">${ICONS.refreshCcw}</button>
   </div>
@@ -2407,9 +2414,12 @@ function openEntityGeneralReport() {
 let _mergedReportCollapsed = true; // Merged Company/Contractor section starts shrunk on the General Report page; persists across renderGeneral() re-renders (module-level, not reset per render)
 let _reportSectionsCollapsed = { driver: true, contractor: true, company: true }; // By Driver/Contractor/Company sections start shrunk too, same as the merged section; persists across renderGeneral() re-renders
 
-async function renderGeneral() {
-  if (!can('canViewGeneral')) { renderAccessDenied(); return; }
-  const content = document.getElementById('page-content');
+/** Fetch shipments and build the full company/driver/contractor breakdown used by both the
+ *  General Report page (renderGeneral) and the General Statement page (renderGeneralStatement),
+ *  plus their Excel/PDF/Settlement exports (js/ui.js) — all read from window._generalReportData
+ *  rather than recomputing it themselves. Kept as one shared function so the two pages and every
+ *  export always agree on the same figures. */
+async function computeGeneralReportData() {
   let ships = [];
   try {
     if (db) { const snap = await db.collection('sonick_shipments').get(); ships = snap.docs.map(d => ({ id: d.id, ...d.data() })); }
@@ -2525,6 +2535,26 @@ async function renderGeneral() {
     mergedEntries, mergedTotalNet, mergedTotalProfit,
   };
 
+  return {
+    ships, byCompany, byDriver, byContractor,
+    driverHasLeb, contractorHasLeb, companyHasLeb, showProfit,
+    totalDol, totalLeb, companyProfit, totalDriverCost, totalContractorCost, netProfit,
+    sumRows, companySum, driverSum, contractorSum,
+    incomeDol, incomeLeb, outcomeDol, outcomeLeb,
+    mergedEntries, mergedTotalNet, mergedTotalProfit,
+  };
+}
+
+async function renderGeneral() {
+  if (!can('canViewGeneral')) { renderAccessDenied(); return; }
+  const content = document.getElementById('page-content');
+  const {
+    ships, byCompany, byDriver, byContractor,
+    driverHasLeb, contractorHasLeb, companyHasLeb, showProfit,
+    netProfit, sumRows, incomeDol, incomeLeb, outcomeDol, outcomeLeb,
+    mergedEntries, mergedTotalNet, mergedTotalProfit,
+  } = await computeGeneralReportData();
+
   const mergedSectionHTML = mergedEntries.length ? `
   <div class="merged-report">
     <div class="merged-report-intro" style="cursor:pointer;" onclick="toggleMergedReportSection()">
@@ -2591,8 +2621,7 @@ async function renderGeneral() {
 
   content.innerHTML = `
   ${pageHeader(t('generalReport'), [t('finance')], can('canExport') ? `<button class="btn btn-secondary btn-sm" onclick="exportGeneralReportExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>
-      <button class="btn btn-secondary btn-sm" onclick="exportGeneralReportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>
-      ${showProfit ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : ''}` : '')}
+      <button class="btn btn-secondary btn-sm" onclick="exportGeneralReportPDF()">${ICONS.pdfFile} ${t('exportPdfBtn')}</button>` : '')}
   <div class="stats-grid" style="margin-bottom:24px;">
     <div class="stat-card brand"><div class="stat-icon brand">${ICONS.package}</div><div class="stat-label">${t('totalShipments')}</div><div class="stat-value">${ships.length}</div></div>
     <div class="stat-card blue"><div class="stat-icon blue">${ICONS.download}</div><div class="stat-label">${t('incomeDollar')}</div><div class="stat-value mono">$${formatNum(incomeDol)}</div></div>
@@ -2650,6 +2679,207 @@ async function renderGeneral() {
   </div>
   ${mergedSectionHTML}
   <style>@media(max-width:768px){.report-grid{grid-template-columns:1fr;}}</style>`;
+}
+
+// ===================================================
+//  GENERAL STATEMENT — styled on-screen settlement view (moved off General Report;
+//  same figures as exportSettlementExcel(), plus live-editable "Old Balance" fields
+//  matching the Excel's yellow manual-entry cells).
+// ===================================================
+async function renderGeneralStatement() {
+  if (!can('canViewGeneral')) { renderAccessDenied(); return; }
+  const content = document.getElementById('page-content');
+  const { byDriver, byContractor, byCompany, showProfit } = await computeGeneralReportData();
+
+  if (!showProfit) {
+    content.innerHTML = `
+    ${pageHeader(t('generalStatement'), [t('finance')])}
+    <div class="table-container"><div class="table-empty" style="padding:60px;"><div class="empty-icon">🏦</div><p>${t('noDataToExport')}</p></div></div>`;
+    return;
+  }
+
+  const headerActions = can('canExport')
+    ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : '';
+
+  const driverEntries = Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count);
+  const entities = buildSettlementEntityRows(byCompany, byContractor);
+  const YELLOW_TH = 'background:rgba(255,211,64,0.16);';
+
+  const driverTotals = driverEntries.reduce((a, [, v]) => {
+    a.net += v.dol - (v.cost || 0); a.cost += v.cost || 0; a.dol += v.dol; a.leb += v.leb || 0; return a;
+  }, { net: 0, cost: 0, dol: 0, leb: 0 });
+
+  const driverRowsHTML = driverEntries.map(([name, v], idx) => `
+    <tr>
+      <td class="font-mono">${idx + 1}</td>
+      <td><strong>${esc(name)}</strong></td>
+      <td class="font-mono">$${formatNum(v.dol - (v.cost || 0))}</td>
+      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td class="font-mono" style="color:var(--green);">$${formatNum(v.cost || 0)}</td>
+      <td class="font-mono">$${formatNum(v.dol)}</td>
+      <td class="font-mono">${v.leb ? formatNum(v.leb) : '—'}</td>
+    </tr>`).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
+
+  const compRowsHTML = entities.map((e, idx) => {
+    const companyDol    = e.company?.dol || 0;
+    const companyLeb    = e.company?.leb || 0;
+    const contractorDol = e.contractor?.dol || 0;
+    const contractorFee = e.contractor?.cost || 0;
+    const contractorNet = contractorDol - contractorFee;
+    const contractorLeb = e.contractor?.leb || 0;
+    const netDol = companyDol - contractorNet;
+    const netLeb = companyLeb - contractorLeb;
+    return `
+    <tr>
+      <td class="font-mono">${idx + 1}</td>
+      <td><strong>${e.company ? esc(e.name) : '—'}</strong></td>
+      <td class="font-mono">$${formatNum(companyDol)}</td>
+      <td class="font-mono">${companyLeb ? formatNum(companyLeb) : '—'}</td>
+      <td><strong>${e.contractor ? esc(e.name) : '—'}</strong></td>
+      <td class="font-mono">$${formatNum(contractorDol)}</td>
+      <td class="font-mono">$${formatNum(contractorFee)}</td>
+      <td class="font-mono">$${formatNum(contractorNet)}</td>
+      <td class="font-mono">${contractorLeb ? formatNum(contractorLeb) : '—'}</td>
+      <td class="font-mono">$${formatNum(netDol)}</td>
+      <td class="font-mono">${netLeb ? formatNum(netLeb) : '—'}</td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-dollar-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-leb-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td class="font-mono" id="stmt-comp-final-dollar-${idx}">$${formatNum(netDol)}</td>
+      <td class="font-mono" id="stmt-comp-final-leb-${idx}">${netLeb ? formatNum(netLeb) : '—'}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="15" class="table-empty"><p>No data</p></td></tr>`;
+
+  content.innerHTML = `
+  ${pageHeader(t('generalStatement'), [t('finance')], headerActions)}
+
+  <div class="table-container" style="margin-bottom:16px;">
+    <div class="card-header"><span class="card-title">🚗 ${t('settlementSheetDriverTitle')}</span></div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>#</th><th>${t('driver')}</th><th>${t('settlementColNetAccount')}</th>
+          <th style="${YELLOW_TH}">${t('settlementColOldBalanceLL')}</th>
+          <th>${t('settlementColDriverProfit')}</th><th>${t('settlementColTotalDollar')}</th><th>${t('settlementColTotalLeb')}</th>
+        </tr></thead>
+        <tbody>${driverRowsHTML}</tbody>
+        <tfoot><tr class="report-total-row">
+          <td></td><td><strong>${t('settlementGrandTotalLabel')} (${driverEntries.length})</strong></td>
+          <td class="font-mono"><strong>$${formatNum(driverTotals.net)}</strong></td>
+          <td class="font-mono" id="stmt-drv-oldbal-total"><strong>0</strong></td>
+          <td class="font-mono" style="color:var(--green);"><strong>$${formatNum(driverTotals.cost)}</strong></td>
+          <td class="font-mono"><strong>$${formatNum(driverTotals.dol)}</strong></td>
+          <td class="font-mono"><strong>${formatNum(driverTotals.leb)}</strong></td>
+        </tr></tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="table-container" style="margin-bottom:16px;">
+    <div class="card-header"><span class="card-title">🏢 ${t('settlementSheetCompanyTitle')}</span></div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>#</th><th>${t('company')}</th><th>${t('settlementColCompanyValueDollar')}</th><th>${t('settlementColCompanyValueLeb')}</th>
+          <th>${t('contractor')}</th><th>${t('settlementColContractorValueDollar')}</th><th>${t('settlementColContractorFee')}</th>
+          <th>${t('settlementColContractorNet')}</th><th>${t('settlementColContractorValueLeb')}</th>
+          <th>${t('settlementColNetValueDollar')}</th><th>${t('settlementColNetValueLeb')}</th>
+          <th style="${YELLOW_TH}">${t('settlementColOldBalanceDollar')}</th>
+          <th style="${YELLOW_TH}">${t('settlementColOldBalanceLL')}</th>
+          <th>${t('settlementColFinalDollar')}</th><th>${t('settlementColFinalLeb')}</th>
+        </tr></thead>
+        <tbody id="stmt-comp-tbody">${compRowsHTML}</tbody>
+        <tfoot><tr class="report-total-row" id="stmt-comp-total-row"></tr></tfoot>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="padding:2px 16px;margin-bottom:16px;">
+    <p style="font-size:0.8rem;color:var(--text-2);margin:10px 0;">🟡 ${t('settlementManualInputNote')}</p>
+  </div>
+
+  <div class="stats-grid" style="margin-bottom:16px;">
+    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementNetCompaniesLabel')}</div><div class="stat-value mono" id="stmt-sum-net-companies">$0 / 0</div></div>
+    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementCompaniesFinalLabel')}</div><div class="stat-value mono" id="stmt-sum-final-companies">$0 / 0</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementOfficeProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-office-profit">$0</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementDriverProfitTotalLabel')}</div><div class="stat-value mono">$${formatNum(driverTotals.cost)}</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementContractorProfitTotalLabel')}</div><div class="stat-value mono" id="stmt-sum-contractor-profit">$0</div></div>
+    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementCombinedProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-combined-profit">$0</div></div>
+  </div>
+  <p style="font-size:0.75rem;color:var(--text-2);font-style:italic;">${t('settlementFootnote')}</p>`;
+
+  window._statementEntities    = entities;
+  window._statementDriverCount = driverEntries.length;
+  window._statementDriverTotals = driverTotals;
+  recalcGeneralStatementTotals();
+}
+
+/** Recompute the Companies & Contractors table's Final Statement cells/footer and the
+ *  Overall Settlement Summary cards on the General Statement page, from the live values
+ *  of the "Old Balance" input fields — mirrors the formulas in exportSettlementExcel()
+ *  (js/ui.js): Final = Net Value + Old Balance; Office Profit = driver net total minus
+ *  companies net total (NOT final, so old-balance entries never change office profit). */
+function recalcGeneralStatementTotals() {
+  const entities = window._statementEntities || [];
+  let companyDolT = 0, companyLebT = 0, contractorDolT = 0, contractorFeeT = 0, contractorNetT = 0, contractorLebT = 0;
+  let netDolT = 0, netLebT = 0, oldDolT = 0, oldLebT = 0, finalDolT = 0, finalLebT = 0;
+
+  entities.forEach((e, idx) => {
+    const companyDol    = e.company?.dol || 0;
+    const companyLeb    = e.company?.leb || 0;
+    const contractorDol = e.contractor?.dol || 0;
+    const contractorFee = e.contractor?.cost || 0;
+    const contractorNet = contractorDol - contractorFee;
+    const contractorLeb = e.contractor?.leb || 0;
+    const netDol = companyDol - contractorNet;
+    const netLeb = companyLeb - contractorLeb;
+    const oldDol = parseFloat(document.getElementById(`stmt-comp-oldbal-dollar-${idx}`)?.value) || 0;
+    const oldLeb = parseFloat(document.getElementById(`stmt-comp-oldbal-leb-${idx}`)?.value) || 0;
+    const finalDol = netDol + oldDol;
+    const finalLeb = netLeb + oldLeb;
+
+    const fd = document.getElementById(`stmt-comp-final-dollar-${idx}`);
+    const fl = document.getElementById(`stmt-comp-final-leb-${idx}`);
+    if (fd) fd.textContent = '$' + formatNum(finalDol);
+    if (fl) fl.textContent = finalLeb ? formatNum(finalLeb) : '—';
+
+    companyDolT += companyDol; companyLebT += companyLeb;
+    contractorDolT += contractorDol; contractorFeeT += contractorFee; contractorNetT += contractorNet; contractorLebT += contractorLeb;
+    netDolT += netDol; netLebT += netLeb; oldDolT += oldDol; oldLebT += oldLeb; finalDolT += finalDol; finalLebT += finalLeb;
+  });
+
+  const totalRow = document.getElementById('stmt-comp-total-row');
+  if (totalRow) totalRow.innerHTML = `
+    <td></td><td><strong>${t('total')} (${entities.length})</strong></td>
+    <td class="font-mono"><strong>$${formatNum(companyDolT)}</strong></td>
+    <td class="font-mono"><strong>${companyLebT ? formatNum(companyLebT) : '—'}</strong></td>
+    <td></td>
+    <td class="font-mono"><strong>$${formatNum(contractorDolT)}</strong></td>
+    <td class="font-mono"><strong>$${formatNum(contractorFeeT)}</strong></td>
+    <td class="font-mono"><strong>$${formatNum(contractorNetT)}</strong></td>
+    <td class="font-mono"><strong>${contractorLebT ? formatNum(contractorLebT) : '—'}</strong></td>
+    <td class="font-mono"><strong>$${formatNum(netDolT)}</strong></td>
+    <td class="font-mono"><strong>${netLebT ? formatNum(netLebT) : '—'}</strong></td>
+    <td class="font-mono"><strong>$${formatNum(oldDolT)}</strong></td>
+    <td class="font-mono"><strong>${oldLebT ? formatNum(oldLebT) : '—'}</strong></td>
+    <td class="font-mono"><strong>$${formatNum(finalDolT)}</strong></td>
+    <td class="font-mono"><strong>${finalLebT ? formatNum(finalLebT) : '—'}</strong></td>`;
+
+  let drvOldT = 0;
+  const drvCount = window._statementDriverCount || 0;
+  for (let i = 0; i < drvCount; i++) drvOldT += parseFloat(document.getElementById(`stmt-drv-oldbal-${i}`)?.value) || 0;
+  const drvOldCell = document.getElementById('stmt-drv-oldbal-total');
+  if (drvOldCell) drvOldCell.innerHTML = `<strong>${formatNum(drvOldT)}</strong>`;
+
+  const driverTotals   = window._statementDriverTotals || { net: 0, cost: 0 };
+  const officeProfit   = driverTotals.net - netDolT;
+  const combinedProfit = officeProfit + driverTotals.cost + contractorFeeT;
+
+  const setHTML = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  setHTML('stmt-sum-net-companies',     `$${formatNum(netDolT)} / ${formatNum(netLebT)}`);
+  setHTML('stmt-sum-final-companies',   `$${formatNum(finalDolT)} / ${formatNum(finalLebT)}`);
+  setHTML('stmt-sum-office-profit',     `$${formatNum(officeProfit)}`);
+  setHTML('stmt-sum-contractor-profit', `$${formatNum(contractorFeeT)}`);
+  setHTML('stmt-sum-combined-profit',   `$${formatNum(combinedProfit)}`);
 }
 
 /** Expand/collapse one of the By Driver/Contractor/Company sections on the General Report

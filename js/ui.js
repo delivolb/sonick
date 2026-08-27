@@ -33,6 +33,7 @@ function setupUI() {
   // Show/hide nav items based on permissions
   const nd  = document.getElementById('nav-debts');
   const ng  = document.getElementById('nav-general');
+  const nst = document.getElementById('nav-statement');
   const nc  = document.getElementById('nav-companies');
   const ncn = document.getElementById('nav-contractors');
   const ndr = document.getElementById('nav-drivers');
@@ -45,6 +46,7 @@ function setupUI() {
 
   if (nd)  nd.style.display  = can('canViewDebts')       ? '' : 'none';
   if (ng)  ng.style.display  = can('canViewGeneral')     ? '' : 'none';
+  if (nst) nst.style.display = can('canViewGeneral')     ? '' : 'none';
   if (nc)  nc.style.display  = can('canManageCompanies')   ? '' : 'none';
   if (ncn) ncn.style.display = can('canManageContractors') ? '' : 'none';
   if (ndr) ndr.style.display = can('canManageDrivers')   ? '' : 'none';
@@ -83,6 +85,7 @@ function navigate(page) {
     archive:        t('archive'),
     import:         t('importExcelTitle'),
     debts:          t('debtsPayments'),general:   t('generalReport'),
+    statement:      t('generalStatement'),
     companies:      t('companies'),    contractors: t('contractors'),
     drivers:        t('drivers'),
     users:          t('users'),        settings:  t('settings'),
@@ -101,6 +104,7 @@ function navigate(page) {
     import:         renderImport,
     debts:          renderDebts,
     general:        renderGeneral,
+    statement:      renderGeneralStatement,
     companies:      renderCompanies,
     contractors:    renderContractors,
     drivers:        renderDrivers,
@@ -916,6 +920,42 @@ function imageToDataURL(url) {
     }));
 }
 
+/** Slice a tall report canvas across as many A4 pages as needed, giving each page its OWN
+ *  correctly-cropped slice image instead of re-embedding the FULL-height canvas on every
+ *  page at an increasingly negative y-offset (the naive approach). That naive approach is a
+ *  known trigger for Adobe Acrobat's "A drawing error occurred" once a report has enough
+ *  rows/pages: every page ends up carrying an oversized image plus an extreme transform, and
+ *  Acrobat's renderer can choke on it even though Chrome/pdf.js tolerate it fine. Cropping
+ *  each page down to just its own slice keeps every embedded image page-sized and the
+ *  transforms simple, and also shrinks the file further since pages no longer overlap. */
+function addCanvasAsPaginatedPDF(pdf, canvas, pdfImgWidth) {
+  const pageWidth  = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const pxPerPt    = canvas.width / pdfImgWidth;          // source canvas px per PDF pt
+  const pagePx     = Math.max(1, Math.floor(pageHeight * pxPerPt)); // canvas px per page
+
+  let srcY = 0, first = true;
+  while (srcY < canvas.height) {
+    const sliceHeightPx = Math.min(pagePx, canvas.height - srcY);
+    const sliceCanvas = document.createElement('canvas');
+    sliceCanvas.width  = canvas.width;
+    sliceCanvas.height = sliceHeightPx;
+    const sctx = sliceCanvas.getContext('2d');
+    sctx.fillStyle = '#ffffff';
+    sctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+    sctx.drawImage(canvas, 0, srcY, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx);
+
+    const sliceImgData   = sliceCanvas.toDataURL('image/png');
+    const sliceImgHeight = sliceHeightPx / pxPerPt;
+
+    if (!first) pdf.addPage();
+    pdf.addImage(sliceImgData, 'PNG', 0, 0, pdfImgWidth, sliceImgHeight, undefined, 'FAST');
+    first = false;
+    srcY += sliceHeightPx;
+  }
+  return { pageWidth, pageHeight };
+}
+
 // ===== STYLED PDF EXPORT =====
 /** Build the report as real HTML off-screen (so Arabic text shapes/joins and RTL reads
  *  correctly, which jsPDF's own text drawing cannot do), rasterize it with html2canvas,
@@ -1027,21 +1067,12 @@ async function exportPDF(defaultName, shipsOverride) {
 
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF('p', 'pt', 'a4');
-    const pageWidth  = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth   = pageWidth;
-    const imgHeight  = canvas.height * (imgWidth / canvas.width);
-    const imgData    = canvas.toDataURL('image/png');
+    const imgWidth = pdf.internal.pageSize.getWidth();
 
-    let heightLeft = imgHeight, position = 0;
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
-      pdf.addPage();
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-    }
+    // Slices the canvas into its own correctly-cropped image per page (see
+    // addCanvasAsPaginatedPDF's comment) instead of re-embedding the full-height canvas at a
+    // shifting offset — avoids Adobe Acrobat's "A drawing error occurred" on larger exports.
+    const { pageWidth, pageHeight } = addCanvasAsPaginatedPDF(pdf, canvas, imgWidth);
 
     const totalPages = pdf.internal.getNumberOfPages();
     for (let i = 1; i <= totalPages; i++) {
@@ -1892,21 +1923,12 @@ async function exportGeneralReportPDF() {
 
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF('p', 'pt', 'a4');
-    const pageWidth  = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth   = pageWidth;
-    const imgHeight  = canvas.height * (imgWidth / canvas.width);
-    const imgData    = canvas.toDataURL('image/png');
+    const imgWidth = pdf.internal.pageSize.getWidth();
 
-    let heightLeft = imgHeight, position = 0;
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
-      pdf.addPage();
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-    }
+    // Slices the canvas into its own correctly-cropped image per page (see
+    // addCanvasAsPaginatedPDF's comment) instead of re-embedding the full-height canvas at a
+    // shifting offset — avoids Adobe Acrobat's "A drawing error occurred" on larger exports.
+    const { pageWidth, pageHeight } = addCanvasAsPaginatedPDF(pdf, canvas, imgWidth);
 
     const totalPages = pdf.internal.getNumberOfPages();
     for (let i = 1; i <= totalPages; i++) {
