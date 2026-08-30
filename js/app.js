@@ -21,6 +21,7 @@ let currentPage     = 'dashboard';
 let editingId       = null;
 let dollPrice       = 0;
 let exportColumnsConfig = null; // saved order/visibility for shipment export columns (Settings → Export Columns); null = not customized yet, use the full default set
+let settlementOldBalances = { driver: {}, entity: {} }; // manual "Old Balance" entries on the General Statement page, keyed by driver name / by company-or-contractor entity name; loaded here, kept in sync by saveSettlementOldBalances()
 
 let companies_cache   = [];
 let contractors_cache = [];
@@ -311,6 +312,9 @@ async function loadCaches() {
       const settingsData = settSnap.data();
       dollPrice = settingsData.dollarRate || 0;
       exportColumnsConfig = Array.isArray(settingsData.exportColumns) ? settingsData.exportColumns : null;
+      settlementOldBalances = (settingsData.settlementOldBalances && typeof settingsData.settlementOldBalances === 'object')
+        ? { driver: settingsData.settlementOldBalances.driver || {}, entity: settingsData.settlementOldBalances.entity || {} }
+        : { driver: {}, entity: {} };
     }
   } catch (e) {
     console.warn('Cache load error — using demo data:', e.message);
@@ -331,6 +335,7 @@ async function loadCaches() {
     ];
     dollPrice = 89500;
     exportColumnsConfig = null;
+    settlementOldBalances = { driver: {}, entity: {} };
     exportReports_cache = [];
     const reason = (e?.code === 'permission-denied' || /insufficient permissions/i.test(e?.message || ''))
       ? 'Demo mode: Firestore denied access to companies/drivers/settings — check your security rules.'

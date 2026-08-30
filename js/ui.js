@@ -702,7 +702,6 @@ function computeExportEntitySummary(ships) {
   } else if (contractor) {
     profitLabel = t('contractorProfitLabel'); profitValue = contractorProfitTotal; dueLabel = t('contractorDueLabel');
   } else {
-    if (!isProfitVisible()) return null; // company's own profit respects the show/hide-profit toggle, same as on screen
     profitLabel = t('profitF'); profitValue = totalProfit; dueLabel = t('companyDueLabel');
   }
 

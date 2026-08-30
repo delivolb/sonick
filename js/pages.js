@@ -2413,6 +2413,7 @@ function openEntityGeneralReport() {
 // ===================================================
 let _mergedReportCollapsed = true; // Merged Company/Contractor section starts shrunk on the General Report page; persists across renderGeneral() re-renders (module-level, not reset per render)
 let _reportSectionsCollapsed = { driver: true, contractor: true, company: true }; // By Driver/Contractor/Company sections start shrunk too, same as the merged section; persists across renderGeneral() re-renders
+let _statementSectionsCollapsed = { driver: true, company: true }; // Driver / Companies&Contractors sections on the General Statement page start shrunk too, same convention; persists across renderGeneralStatement() re-renders
 
 /** Fetch shipments and build the full company/driver/contractor breakdown used by both the
  *  General Report page (renderGeneral) and the General Statement page (renderGeneralStatement),
@@ -2698,8 +2699,9 @@ async function renderGeneralStatement() {
     return;
   }
 
-  const headerActions = can('canExport')
-    ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : '';
+  const headerActions =
+    (can('canManageUsers') ? `<button class="btn btn-secondary btn-sm" onclick="saveSettlementOldBalances()">💾 ${t('settlementSaveBalancesBtn')}</button>` : '') +
+    (can('canExport') ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : '');
 
   const driverEntries = Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count);
   const entities = buildSettlementEntityRows(byCompany, byContractor);
@@ -2709,16 +2711,19 @@ async function renderGeneralStatement() {
     a.net += v.dol - (v.cost || 0); a.cost += v.cost || 0; a.dol += v.dol; a.leb += v.leb || 0; return a;
   }, { net: 0, cost: 0, dol: 0, leb: 0 });
 
-  const driverRowsHTML = driverEntries.map(([name, v], idx) => `
+  const driverRowsHTML = driverEntries.map(([name, v], idx) => {
+    const savedLL = settlementOldBalances.driver?.[name];
+    return `
     <tr>
       <td class="font-mono">${idx + 1}</td>
       <td><strong>${esc(name)}</strong></td>
       <td class="font-mono">$${formatNum(v.dol - (v.cost || 0))}</td>
-      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" value="${savedLL || savedLL === 0 ? savedLL : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
       <td class="font-mono" style="color:var(--green);">$${formatNum(v.cost || 0)}</td>
       <td class="font-mono">$${formatNum(v.dol)}</td>
       <td class="font-mono">${v.leb ? formatNum(v.leb) : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
 
   const compRowsHTML = entities.map((e, idx) => {
     const companyDol    = e.company?.dol || 0;
@@ -2729,6 +2734,8 @@ async function renderGeneralStatement() {
     const contractorLeb = e.contractor?.leb || 0;
     const netDol = companyDol - contractorNet;
     const netLeb = companyLeb - contractorLeb;
+    const savedDol = settlementOldBalances.entity?.[e.name]?.dollar;
+    const savedLeb = settlementOldBalances.entity?.[e.name]?.leb;
     return `
     <tr>
       <td class="font-mono">${idx + 1}</td>
@@ -2742,8 +2749,8 @@ async function renderGeneralStatement() {
       <td class="font-mono">${contractorLeb ? formatNum(contractorLeb) : '—'}</td>
       <td class="font-mono">$${formatNum(netDol)}</td>
       <td class="font-mono">${netLeb ? formatNum(netLeb) : '—'}</td>
-      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-dollar-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
-      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-leb-${idx}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-dollar-${idx}" value="${savedDol || savedDol === 0 ? savedDol : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-leb-${idx}" value="${savedLeb || savedLeb === 0 ? savedLeb : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
       <td class="font-mono" id="stmt-comp-final-dollar-${idx}">$${formatNum(netDol)}</td>
       <td class="font-mono" id="stmt-comp-final-leb-${idx}">${netLeb ? formatNum(netLeb) : '—'}</td>
     </tr>`;
@@ -2752,8 +2759,25 @@ async function renderGeneralStatement() {
   content.innerHTML = `
   ${pageHeader(t('generalStatement'), [t('finance')], headerActions)}
 
+  <div class="stats-grid" style="margin-bottom:16px;">
+    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementNetCompaniesLabel')}</div><div class="stat-value mono" id="stmt-sum-net-companies">$0 / 0</div></div>
+    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementCompaniesFinalLabel')}</div><div class="stat-value mono" id="stmt-sum-final-companies">$0 / 0</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementOfficeProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-office-profit">$0</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementDriverProfitTotalLabel')}</div><div class="stat-value mono">$${formatNum(driverTotals.cost)}</div></div>
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementContractorProfitTotalLabel')}</div><div class="stat-value mono" id="stmt-sum-contractor-profit">$0</div></div>
+    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementCombinedProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-combined-profit">$0</div></div>
+  </div>
+
+  <div class="card" style="padding:2px 16px;margin-bottom:16px;">
+    <p style="font-size:0.8rem;color:var(--text-2);margin:10px 0;">🟡 ${t('settlementManualInputNote')}</p>
+  </div>
+
   <div class="table-container" style="margin-bottom:16px;">
-    <div class="card-header"><span class="card-title">🚗 ${t('settlementSheetDriverTitle')}</span></div>
+    <div class="card-header" style="cursor:pointer;" onclick="toggleStatementSection('driver')">
+      <span class="card-title">🚗 ${t('settlementSheetDriverTitle')}</span>
+      <span id="statement-section-toggle-driver" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_statementSectionsCollapsed.driver ? '0' : '180'}deg);">▾</span>
+    </div>
+    <div id="statement-section-body-driver" style="display:${_statementSectionsCollapsed.driver ? 'none' : 'block'};">
     <div class="table-scroll">
       <table>
         <thead><tr>
@@ -2772,10 +2796,15 @@ async function renderGeneralStatement() {
         </tr></tfoot>
       </table>
     </div>
+    </div>
   </div>
 
   <div class="table-container" style="margin-bottom:16px;">
-    <div class="card-header"><span class="card-title">🏢 ${t('settlementSheetCompanyTitle')}</span></div>
+    <div class="card-header" style="cursor:pointer;" onclick="toggleStatementSection('company')">
+      <span class="card-title">🏢 ${t('settlementSheetCompanyTitle')}</span>
+      <span id="statement-section-toggle-company" style="display:inline-block;font-size:1.2rem;transition:transform var(--transition);transform:rotate(${_statementSectionsCollapsed.company ? '0' : '180'}deg);">▾</span>
+    </div>
+    <div id="statement-section-body-company" style="display:${_statementSectionsCollapsed.company ? 'none' : 'block'};">
     <div class="table-scroll">
       <table>
         <thead><tr>
@@ -2791,26 +2820,48 @@ async function renderGeneralStatement() {
         <tfoot><tr class="report-total-row" id="stmt-comp-total-row"></tr></tfoot>
       </table>
     </div>
+    </div>
   </div>
 
-  <div class="card" style="padding:2px 16px;margin-bottom:16px;">
-    <p style="font-size:0.8rem;color:var(--text-2);margin:10px 0;">🟡 ${t('settlementManualInputNote')}</p>
-  </div>
-
-  <div class="stats-grid" style="margin-bottom:16px;">
-    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementNetCompaniesLabel')}</div><div class="stat-value mono" id="stmt-sum-net-companies">$0 / 0</div></div>
-    <div class="stat-card purple"><div class="stat-icon purple">${ICONS.landmark}</div><div class="stat-label">${t('settlementCompaniesFinalLabel')}</div><div class="stat-value mono" id="stmt-sum-final-companies">$0 / 0</div></div>
-    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementOfficeProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-office-profit">$0</div></div>
-    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementDriverProfitTotalLabel')}</div><div class="stat-value mono">$${formatNum(driverTotals.cost)}</div></div>
-    <div class="stat-card green"><div class="stat-icon green">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementContractorProfitTotalLabel')}</div><div class="stat-value mono" id="stmt-sum-contractor-profit">$0</div></div>
-    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.trendingUp}</div><div class="stat-label">${t('settlementCombinedProfitLabel')}</div><div class="stat-value mono" id="stmt-sum-combined-profit">$0</div></div>
-  </div>
   <p style="font-size:0.75rem;color:var(--text-2);font-style:italic;">${t('settlementFootnote')}</p>`;
 
   window._statementEntities    = entities;
   window._statementDriverCount = driverEntries.length;
+  window._statementDriverNames = driverEntries.map(([name]) => name);
   window._statementDriverTotals = driverTotals;
   recalcGeneralStatementTotals();
+}
+
+/** Reads every "Old Balance" yellow input currently on the General Statement page (driver
+ *  L.L. balances + company/contractor $ and L.L. balances) and persists them to
+ *  sonick_settings/general so they survive a page reload/navigation instead of resetting —
+ *  same doc + save pattern as saveDollarRate()/saveExportColumns() in Settings. */
+async function saveSettlementOldBalances() {
+  const driverNames = window._statementDriverNames || [];
+  const entities     = window._statementEntities || [];
+
+  const driverBalances = {};
+  driverNames.forEach((name, idx) => {
+    const val = parseFloat(document.getElementById(`stmt-drv-oldbal-${idx}`)?.value);
+    if (!isNaN(val) && val !== 0) driverBalances[name] = val;
+  });
+
+  const entityBalances = {};
+  entities.forEach((e, idx) => {
+    const dol = parseFloat(document.getElementById(`stmt-comp-oldbal-dollar-${idx}`)?.value);
+    const leb = parseFloat(document.getElementById(`stmt-comp-oldbal-leb-${idx}`)?.value);
+    const entry = {};
+    if (!isNaN(dol) && dol !== 0) entry.dollar = dol;
+    if (!isNaN(leb) && leb !== 0) entry.leb = leb;
+    if (Object.keys(entry).length) entityBalances[e.name] = entry;
+  });
+
+  const payload = { driver: driverBalances, entity: entityBalances };
+  try {
+    if (db) await db.collection('sonick_settings').doc('general').set({ settlementOldBalances: payload }, { merge: true });
+    settlementOldBalances = payload;
+    toast(t('settlementBalancesSaved'), 'success');
+  } catch (e) { toast(t('error') + e.message, 'error'); }
 }
 
 /** Recompute the Companies & Contractors table's Final Statement cells/footer and the
@@ -2903,6 +2954,18 @@ function toggleMergedReportSection() {
   const icon = document.getElementById('merged-report-toggle-icon');
   if (body) body.style.display = _mergedReportCollapsed ? 'none' : 'block';
   if (icon) icon.style.transform = `rotate(${_mergedReportCollapsed ? '0' : '180'}deg)`;
+}
+
+/** Expand/collapse the Driver / Companies&Contractors sections on the General Statement
+ *  page. Starts shrunk (_statementSectionsCollapsed = all true), same convention as the
+ *  General Report sections; state persists across renderGeneralStatement() re-renders
+ *  since the flag lives at module scope, not inside the function. */
+function toggleStatementSection(key) {
+  _statementSectionsCollapsed[key] = !_statementSectionsCollapsed[key];
+  const body = document.getElementById(`statement-section-body-${key}`);
+  const icon = document.getElementById(`statement-section-toggle-${key}`);
+  if (body) body.style.display = _statementSectionsCollapsed[key] ? 'none' : 'block';
+  if (icon) icon.style.transform = `rotate(${_statementSectionsCollapsed[key] ? '0' : '180'}deg)`;
 }
 
 // ===================================================
