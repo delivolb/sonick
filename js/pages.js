@@ -52,13 +52,6 @@ async function renderDashboard() {
 
   content.innerHTML = `
   ${pageHeader(t('dashboard'))}
-  <div class="stats-grid">
-    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.package}</div><div class="stat-label">${t('totalShipments')}</div><div class="stat-value">${stats.total}</div></div>
-    <div class="stat-card amber"><div class="stat-icon amber">${ICONS.clock}</div><div class="stat-label">${t('pending')}</div><div class="stat-value">${stats.pending}</div></div>
-    <div class="stat-card green"><div class="stat-icon green">${ICONS.checkCircle}</div><div class="stat-label">${t('delivered')}</div><div class="stat-value">${stats.delivered}</div></div>
-    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.dollarSign}</div><div class="stat-label">${t('revenue')}</div><div class="stat-value mono">$${formatNum(stats.totalDol)}</div></div>
-    ${showProfit ? `<div class="stat-card purple"><div class="stat-icon purple">${ICONS.trendingUp}</div><div class="stat-label">${t('profit')}</div><div class="stat-value mono">$${formatNum(stats.profit)}</div></div>` : ''}
-  </div>
 
   ${can('canCreateShipments') || can('canManageCompanies') || can('canManageContractors') || can('canManageDrivers') ? `
   <div class="section-header"><div class="section-title">${t('quickActions')}</div></div>
@@ -2726,7 +2719,9 @@ async function renderGeneralStatement() {
   }).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
 
   const compRowsHTML = entities.map((e, idx) => {
-    const companyDol    = e.company?.dol || 0;
+    // Company Value must match the "Amount Due to Company" figure on the General Report page:
+    // company revenue minus our profit share on that company's orders — not raw revenue.
+    const companyDol    = (e.company?.dol || 0) - (e.company?.profit || 0);
     const companyLeb    = e.company?.leb || 0;
     const contractorDol = e.contractor?.dol || 0;
     const contractorFee = e.contractor?.cost || 0;
@@ -2875,7 +2870,9 @@ function recalcGeneralStatementTotals() {
   let netDolT = 0, netLebT = 0, oldDolT = 0, oldLebT = 0, finalDolT = 0, finalLebT = 0;
 
   entities.forEach((e, idx) => {
-    const companyDol    = e.company?.dol || 0;
+    // Keep in sync with the render in renderGeneralStatement() and exportSettlementExcel():
+    // company revenue minus our profit share, matching "Amount Due to Company" elsewhere.
+    const companyDol    = (e.company?.dol || 0) - (e.company?.profit || 0);
     const companyLeb    = e.company?.leb || 0;
     const contractorDol = e.contractor?.dol || 0;
     const contractorFee = e.contractor?.cost || 0;

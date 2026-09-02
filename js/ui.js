@@ -1556,7 +1556,9 @@ async function exportSettlementExcel() {
   cSheet.columns = compCols.map((c, i) => ({ width: i === 1 || i === 4 ? 22 : 15 }));
 
   entities.forEach((e, idx) => {
-    const companyDol    = e.company?.dol || 0;
+    // Keep in sync with pages.js (renderGeneralStatement / recalcGeneralStatementTotals):
+    // company revenue minus our profit share, matching "Amount Due to Company" elsewhere.
+    const companyDol    = (e.company?.dol || 0) - (e.company?.profit || 0);
     const companyLeb    = e.company?.leb || 0;
     const contractorDol = e.contractor?.dol || 0;
     const contractorFee = e.contractor?.cost || 0;
