@@ -1484,7 +1484,7 @@ async function exportSettlementExcel() {
     { label: '#',                                  fmt: 'number' },
     { label: t('driver'),                          fmt: 'text'   },
     { label: t('settlementColNetAccount'),         fmt: 'dollar' },
-    { label: t('settlementColOldBalanceLL'),       fmt: 'leb', manual: true },
+    { label: t('settlementColOldBalanceDollar'),   fmt: 'dollar', manual: true },
     { label: t('settlementColDriverProfit'),       fmt: 'dollar' },
     { label: t('settlementColTotalDollar'),        fmt: 'dollar' },
     { label: t('settlementColTotalLeb'),           fmt: 'leb'    },

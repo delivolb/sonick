@@ -2710,11 +2710,11 @@ async function renderGeneralStatement() {
     <tr>
       <td class="font-mono">${idx + 1}</td>
       <td><strong>${esc(name)}</strong></td>
-      <td class="font-mono">$${formatNum(v.dol - (v.cost || 0))}</td>
-      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" value="${savedLL || savedLL === 0 ? savedLL : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
-      <td class="font-mono" style="color:var(--green);">$${formatNum(v.cost || 0)}</td>
       <td class="font-mono">$${formatNum(v.dol)}</td>
       <td class="font-mono">${v.leb ? formatNum(v.leb) : '—'}</td>
+      <td class="font-mono" style="color:var(--green);">$${formatNum(v.cost || 0)}</td>
+      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" value="${savedLL || savedLL === 0 ? savedLL : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td class="font-mono" id="stmt-drv-net-${idx}">$${formatNum(v.dol - (v.cost || 0))}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
 
@@ -2776,18 +2776,19 @@ async function renderGeneralStatement() {
     <div class="table-scroll">
       <table>
         <thead><tr>
-          <th>#</th><th>${t('driver')}</th><th>${t('settlementColNetAccount')}</th>
-          <th style="${YELLOW_TH}">${t('settlementColOldBalanceLL')}</th>
-          <th>${t('settlementColDriverProfit')}</th><th>${t('settlementColTotalDollar')}</th><th>${t('settlementColTotalLeb')}</th>
+          <th>#</th><th>${t('driver')}</th><th>${t('settlementColTotalDollar')}</th><th>${t('settlementColTotalLeb')}</th>
+          <th>${t('settlementColDriverProfit')}</th>
+          <th style="${YELLOW_TH}">${t('settlementColOldBalanceDollar')}</th>
+          <th>${t('settlementColNetAccount')}</th>
         </tr></thead>
         <tbody>${driverRowsHTML}</tbody>
         <tfoot><tr class="report-total-row">
           <td></td><td><strong>${t('settlementGrandTotalLabel')} (${driverEntries.length})</strong></td>
-          <td class="font-mono"><strong>$${formatNum(driverTotals.net)}</strong></td>
-          <td class="font-mono" id="stmt-drv-oldbal-total"><strong>0</strong></td>
-          <td class="font-mono" style="color:var(--green);"><strong>$${formatNum(driverTotals.cost)}</strong></td>
           <td class="font-mono"><strong>$${formatNum(driverTotals.dol)}</strong></td>
           <td class="font-mono"><strong>${formatNum(driverTotals.leb)}</strong></td>
+          <td class="font-mono" style="color:var(--green);"><strong>$${formatNum(driverTotals.cost)}</strong></td>
+          <td class="font-mono" id="stmt-drv-oldbal-total"><strong>0</strong></td>
+          <td class="font-mono" id="stmt-drv-net-total"><strong>$${formatNum(driverTotals.net)}</strong></td>
         </tr></tfoot>
       </table>
     </div>
@@ -2824,6 +2825,7 @@ async function renderGeneralStatement() {
   window._statementDriverCount = driverEntries.length;
   window._statementDriverNames = driverEntries.map(([name]) => name);
   window._statementDriverTotals = driverTotals;
+  window._statementDriverEntries = driverEntries;
   recalcGeneralStatementTotals();
 }
 
@@ -2912,11 +2914,20 @@ function recalcGeneralStatementTotals() {
     <td class="font-mono"><strong>$${formatNum(finalDolT)}</strong></td>
     <td class="font-mono"><strong>${finalLebT ? formatNum(finalLebT) : '—'}</strong></td>`;
 
-  let drvOldT = 0;
-  const drvCount = window._statementDriverCount || 0;
-  for (let i = 0; i < drvCount; i++) drvOldT += parseFloat(document.getElementById(`stmt-drv-oldbal-${i}`)?.value) || 0;
+  let drvOldT = 0, drvNetT = 0;
+  const driverEntries = window._statementDriverEntries || [];
+  driverEntries.forEach(([, v], i) => {
+    const oldDol = parseFloat(document.getElementById(`stmt-drv-oldbal-${i}`)?.value) || 0;
+    const netAccount = v.dol - (v.cost || 0);
+    const finalNet = netAccount + oldDol;
+    drvOldT += oldDol; drvNetT += finalNet;
+    const cell = document.getElementById(`stmt-drv-net-${i}`);
+    if (cell) cell.textContent = '$' + formatNum(finalNet);
+  });
   const drvOldCell = document.getElementById('stmt-drv-oldbal-total');
-  if (drvOldCell) drvOldCell.innerHTML = `<strong>${formatNum(drvOldT)}</strong>`;
+  if (drvOldCell) drvOldCell.innerHTML = `<strong>$${formatNum(drvOldT)}</strong>`;
+  const drvNetCell = document.getElementById('stmt-drv-net-total');
+  if (drvNetCell) drvNetCell.innerHTML = `<strong>$${formatNum(drvNetT)}</strong>`;
 
   const driverTotals   = window._statementDriverTotals || { net: 0, cost: 0 };
   const officeProfit   = driverTotals.net - netDolT;
