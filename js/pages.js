@@ -1671,6 +1671,7 @@ async function archiveShipment(id) {
             archivedBy: currentUserData?.id
           });
           await db.collection('sonick_shipments').doc(id).delete();
+          archCounterAdjust(1);
         }
       }
       toast(t('shipmentArchived'), 'success');
@@ -1705,6 +1706,7 @@ async function archiveFilteredShipments() {
         const CHUNK = 200; // set+delete = 2 writes/doc, stay well under Firestore's 500-write batch limit
         for (let i = 0; i < docs.length; i += CHUNK) {
           const batch = db.batch();
+          let chunkCount = 0;
           docs.slice(i, i + CHUNK).forEach(doc => {
             if (!doc.exists) return;
             batch.set(db.collection('sonick_archive').doc(doc.id), {
@@ -1713,7 +1715,9 @@ async function archiveFilteredShipments() {
               archivedBy: currentUserData?.id
             });
             batch.delete(db.collection('sonick_shipments').doc(doc.id));
+            chunkCount++;
           });
+          if (chunkCount) batch.set(archCounterDocRef(), { archivedCount: firebase.firestore.FieldValue.increment(chunkCount) }, { merge: true });
           await batch.commit();
         }
       }
@@ -1727,15 +1731,24 @@ async function archiveFilteredShipments() {
 // ===================================================
 //  ARCHIVE
 // ===================================================
+
+/** Archive pagination state.
+ *  ARCH_PAGE_SIZE — both the Firestore page size (in 'paged' mode, exactly one page's worth
+ *  of docs is read per Firestore call — was a flat 500-doc read on EVERY visit before) and
+ *  the client-side display chunk size (in 'all' mode, after an admin presses Show All).
+ *  'paged' mode: Prev/Next fetch that page directly from Firestore (cached per page so
+ *  revisiting a page costs no extra reads). 'all' mode: the entire collection was already
+ *  loaded, so Prev/Next just re-slice it in memory. */
+const ARCH_PAGE_SIZE = 100;
+
 async function refreshArchiveData() {
-  try {
-    if (db) {
-      const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(500).get();
-      window._allArchShips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      backfillMissingOrderTypes('sonick_archive', window._allArchShips);
-    }
-  } catch (e) { /* keep whatever was already loaded */ }
-  filterArchive();
+  window._archMode              = 'paged';
+  window._archPageCache         = {};
+  window._archPageStartCursors  = {};
+  window._archCurrentPage       = 1;
+  window._archLastKnownPage     = null;
+  await archFetchTotalCount();
+  await archLoadFirestorePage(1);
 }
 
 /** Builds the Archive table's <thead> row — same rule as Shipments: "our profit" follows
@@ -1753,15 +1766,153 @@ function archTheadRowHTML(canManage, showOurProfit, showDriverProfit, showContra
   </tr>`;
 }
 
+/** Reference to the small persisted counter doc that tracks the true archive size, kept in
+ *  sync by archCounterAdjust() below. Reading it costs exactly 1 document read regardless of
+ *  archive size — a reliable stand-in for Firestore's count() aggregate, which this
+ *  environment doesn't consistently return a value from. */
+const archCounterDocRef = () => db.collection('sonick_meta').doc('counters');
+
+/** Adjusts the maintained archive-count counter by `delta` (positive when archiving,
+ *  negative when unarchiving/deleting) — call this right after any write that changes how
+ *  many documents are in sonick_archive. Best-effort: if it fails, the total-page label just
+ *  falls back to unknown/stale until the next successful read/bootstrap; it never blocks or
+ *  fails the action itself. */
+async function archCounterAdjust(delta) {
+  if (!db || !delta) return;
+  try {
+    await archCounterDocRef().set({ archivedCount: firebase.firestore.FieldValue.increment(delta) }, { merge: true });
+  } catch (e) { /* best-effort */ }
+}
+
+/** Gets the true archived-order total for the page label, from the maintained counter doc
+ *  (1 read, always available once seeded) rather than Firestore's count() aggregate, which
+ *  doesn't reliably return a value in every project setup. If the counter hasn't been seeded
+ *  yet, this tries count() once as a bootstrap and persists the result for next time; if that
+ *  also comes back empty, the label just omits the "of ~N" part (see showAllArchive(), which
+ *  also seeds/repairs this counter for free the next time an admin uses it). */
+async function archFetchTotalCount() {
+  window._archTotalCount = null;
+  if (!db) return;
+  try {
+    const counterDoc = await archCounterDocRef().get();
+    if (counterDoc.exists && typeof counterDoc.data().archivedCount === 'number') {
+      window._archTotalCount = Math.max(0, counterDoc.data().archivedCount);
+      return;
+    }
+  } catch (e) { /* fall through to the one-time aggregate bootstrap below */ }
+  try {
+    const countSnap = await db.collection('sonick_archive').count().get();
+    window._archTotalCount = countSnap.data().count;
+    archCounterDocRef().set({ archivedCount: window._archTotalCount }, { merge: true }).catch(() => {});
+  } catch (e) { window._archTotalCount = null; /* aggregate queries unavailable here — label omits the "of ~N" part until Show All seeds it */ }
+}
+
+/** Load one Firestore page (ARCH_PAGE_SIZE docs) of the archive directly by page number —
+ *  from cache if this page was already visited (no extra read), otherwise via a real
+ *  Firestore query using the startAfter cursor recorded when the previous page was fetched.
+ *
+ *  Whether Next is enabled is decided purely from what a page fetch actually returns, never
+ *  from the (approximate, occasionally wrong) count() total: a page that comes back full
+ *  (ARCH_PAGE_SIZE docs) means "keep going", a page that comes back short or empty means
+ *  window._archLastKnownPage is now known for certain — Next fetches the true next 100
+ *  regardless of what "Show all" has or hasn't been pressed. */
+async function archLoadFirestorePage(page) {
+  if (page < 1) return;
+  if (window._archLastKnownPage != null && page > window._archLastKnownPage) return; // proven not to exist
+  const bar = document.getElementById('arch-pagination');
+  if (window._archPageCache[page]) {
+    const ships = window._archPageCache[page];
+    if (ships.length < ARCH_PAGE_SIZE) window._archLastKnownPage = page;
+    window._allArchShips    = ships;
+    window._archCurrentPage = page;
+    applyArchFilters();
+    renderArchTable();
+    return;
+  }
+  if (!db) return;
+  if (bar) bar.style.opacity = '0.6';
+  try {
+    let q = db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(ARCH_PAGE_SIZE);
+    const startCursor = window._archPageStartCursors[page];
+    if (startCursor) q = q.startAfter(startCursor);
+    const snap = await q.get();
+
+    if (!snap.docs.length && page > 1) {
+      // Overshot: the previous page looked full (exactly ARCH_PAGE_SIZE) but was actually
+      // the last one — now confirmed. Stay put on the last real page instead of showing blank.
+      window._archLastKnownPage = page - 1;
+      toast(t('noMoreArchivedOrders'), 'info');
+      renderArchTable(); // re-renders with the now-known last page, data/current page unchanged
+      return;
+    }
+
+    const ships = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    backfillMissingOrderTypes('sonick_archive', ships);
+    window._archPageCache[page] = ships;
+    if (ships.length < ARCH_PAGE_SIZE) window._archLastKnownPage = page;
+    if (snap.docs.length) window._archPageStartCursors[page + 1] = snap.docs[snap.docs.length - 1];
+    window._allArchShips    = ships;
+    window._archCurrentPage = page;
+    applyArchFilters();
+    renderArchTable();
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+  finally { if (bar) bar.style.opacity = '1'; }
+}
+
+/** Admin-only escape hatch: load the ENTIRE archive collection at once (like the old
+ *  unconditional behavior) for the rare case someone genuinely needs to search/export across
+ *  everything in one go. Costs one read per archived order, so it's gated to admins and asks
+ *  for confirmation first. */
+async function showAllArchive() {
+  if (!can('canManageUsers')) return;
+  confirmAction(t('showAllConfirmTitle'), t('showAllConfirmMsg'), async () => {
+    const btn = document.getElementById('arch-show-all-btn');
+    if (btn) { btn.disabled = true; btn.textContent = t('loadingMore'); }
+    try {
+      if (db) {
+        const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').get();
+        window._allArchShips = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        backfillMissingOrderTypes('sonick_archive', window._allArchShips);
+        // Free accurate reseed of the maintained counter — we already paid for every doc
+        // read here, so use the exact real total to repair archCounterAdjust()'s running
+        // count in case it had ever drifted (e.g. a doc removed outside this app).
+        window._archTotalCount = window._allArchShips.length;
+        archCounterDocRef().set({ archivedCount: window._archTotalCount }, { merge: true }).catch(() => {});
+      }
+      window._archMode        = 'all';
+      window._archCurrentPage = 1;
+      applyArchFilters();
+      renderArchTable();
+    } catch (e) { toast(t('error') + e.message, 'error'); }
+  });
+}
+
+/** Leave Show-All mode and go back to efficient per-page Firestore reads. */
+async function exitArchShowAllMode() {
+  await renderArchive();
+}
+
 async function renderArchive() {
   const content = document.getElementById('page-content');
+  window._archMode             = 'paged';
+  window._archPageCache        = {};
+  window._archPageStartCursors = {};
+  window._archCurrentPage      = 1;
+  window._archTotalCount       = null;
+  window._archLastKnownPage    = null;
   let ships = [];
   try {
     if (db) {
-      const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(500).get();
+      await archFetchTotalCount();
+      const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(ARCH_PAGE_SIZE).get();
       ships = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      backfillMissingOrderTypes('sonick_archive', ships);
+      window._archPageCache[1] = ships;
+      if (ships.length < ARCH_PAGE_SIZE) window._archLastKnownPage = 1;
+      if (snap.docs.length) window._archPageStartCursors[2] = snap.docs[snap.docs.length - 1];
     }
-  } catch (e) { ships = getDemoShipments().map(s => ({ ...s, status: 'Delivered' })); }
+  } catch (e) { ships = getDemoShipments().map(s => ({ ...s, status: 'Delivered' })); window._archTotalCount = ships.length; window._archLastKnownPage = 1; }
+
 
   const canSeeProfit = can('canViewProfit');
   const showProfit   = canSeeProfit && isProfitVisible();
@@ -1855,6 +2006,7 @@ async function renderArchive() {
         <tbody id="arch-tbody"></tbody>
       </table>
     </div>
+    <div id="arch-pagination" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--border-2);flex-wrap:wrap;"></div>
   </div>
   <div class="mobile-cards" id="arch-mobile"></div>`;
 
@@ -1884,7 +2036,12 @@ function archivedDateStr(s) {
   return d.toISOString().slice(0, 10);
 }
 
-function filterArchive() {
+/** Recomputes window._filteredArchShips from window._allArchShips using the current filter
+ *  controls — pure filtering, no page reset and no render (see filterArchive()/
+ *  archLoadFirestorePage() for the two different ways this gets triggered). In 'paged' mode
+ *  window._allArchShips is just the single currently-loaded Firestore page, so filtering
+ *  narrows within that page only; in 'all' mode it's the entire archive. */
+function applyArchFilters() {
   const searchRaw   = (document.getElementById('arch-search')?.value || '').trim();
   const searchNums  = searchRaw.includes(',')
     ? [...new Set(searchRaw.split(',').map(v => v.trim()).filter(Boolean))]
@@ -1902,7 +2059,7 @@ function filterArchive() {
 
   updateArchStatusFilterLabel(statuses);
 
-  let ships = (window._allArchShips || []).filter(s => {
+  window._filteredArchShips = (window._allArchShips || []).filter(s => {
     if (searchNums) {
       if (!searchNums.includes(String(s.shipNumber).trim())) return false;
     } else if (search && !(
@@ -1925,9 +2082,29 @@ function filterArchive() {
       if (archTo   && (!archDate || archDate > archTo))   return false;
     }
     return true;
-  });
+  }); // exact "searched rows" set for export/bulk actions
+}
 
-  window._filteredArchShips = ships; // exact "searched rows" set for export/bulk actions
+/** Applies the filter controls, then renders. Called on every filter/search input change.
+ *  In 'all' mode (admin pressed Show All) a filter change also jumps back to display page 1.
+ *  In 'paged' mode the current Firestore page stays put — filtering narrows within it live,
+ *  rather than jumping to a different server page just because the search box changed. */
+function filterArchive() {
+  applyArchFilters();
+  if (window._archMode === 'all') window._archCurrentPage = 1;
+  renderArchTable();
+}
+
+/** Draws the Archive table/summary/pagination from window._filteredArchShips. In 'all' mode
+ *  this slices the full filtered set into ARCH_PAGE_SIZE chunks purely in memory. In 'paged'
+ *  mode window._filteredArchShips already IS just one Firestore page (optionally narrowed by
+ *  filters), so it's shown in full and the page total instead comes from the true archive
+ *  count (window._archTotalCount, see archFetchTotalCount()). */
+function renderArchTable() {
+  const ships       = window._filteredArchShips || [];
+  const company     = document.getElementById('arch-company-filter')?.value    || '';
+  const driver      = document.getElementById('arch-driver-filter')?.value     || '';
+  const contractor  = document.getElementById('arch-contractor-filter')?.value || '';
 
   const canSeeProfit         = can('canViewProfit');
   const showOurProfit        = canSeeProfit && isProfitVisible();
@@ -1947,6 +2124,19 @@ function filterArchive() {
   });
 
   const anyEntityFilterSelected = !!(company || driver || contractor);
+
+  let totalPages, pageShips;
+  if (window._archMode === 'all') {
+    totalPages = Math.max(1, Math.ceil(ships.length / ARCH_PAGE_SIZE));
+    window._archCurrentPage = Math.min(Math.max(1, window._archCurrentPage || 1), totalPages);
+    const pageStart = (window._archCurrentPage - 1) * ARCH_PAGE_SIZE;
+    pageShips = ships.slice(pageStart, pageStart + ARCH_PAGE_SIZE);
+  } else {
+    // totalPages here is only ever used for the page LABEL, never to decide whether Next can
+    // be clicked — see renderArchPaginationBar()/window._archLastKnownPage for that.
+    totalPages = window._archLastKnownPage ?? (window._archTotalCount != null ? Math.ceil(window._archTotalCount / ARCH_PAGE_SIZE) : null);
+    pageShips  = ships; // already just this one Firestore page, optionally filtered
+  }
 
   const countEl   = document.getElementById('arch-count');
   const summaryEl = document.getElementById('arch-summary');
@@ -1983,8 +2173,8 @@ function filterArchive() {
   const mobile = document.getElementById('arch-mobile');
   if (tbody) {
     window._selectedArchIds = window._selectedArchIds || new Set();
-    tbody.innerHTML = ships.length
-      ? ships.map(s => `
+    tbody.innerHTML = pageShips.length
+      ? pageShips.map(s => `
     <tr>
       ${canManage ? `<td style="text-align:center;"><input type="checkbox" class="arch-row-check" value="${s.id}" ${window._selectedArchIds.has(s.id) ? 'checked' : ''} onchange="toggleArchRowCheck('${s.id}', this.checked)"></td>` : ''}
       <td class="font-mono" style="color:var(--brand-light);font-weight:600;">#${s.shipNumber || '—'}</td>
@@ -2011,9 +2201,57 @@ function filterArchive() {
     </tr>`).join('')
       : `<tr><td colspan="${colCount}" class="table-empty"><div class="empty-icon">🗄️</div><p>Archive is empty</p></td></tr>`;
   }
-  if (mobile) mobile.innerHTML = ships.slice(0, 30).map(s => mobileShipCard(s)).join('');
+  if (mobile) mobile.innerHTML = pageShips.map(s => mobileShipCard(s)).join('');
 
+  renderArchPaginationBar(totalPages);
   updateArchSelectionUI();
+}
+
+/** Prev/Next + page indicator, plus an admin-only Show All / back-to-paged control.
+ *  Arrow glyphs are swapped relative to their literal "back"/"forward" meaning because the
+ *  page reads right-to-left: Prev (السابق, on the right) points ▶ toward the start of the
+ *  list, Next (التالي, on the left) points ◀ onward — matching how RTL readers expect
+ *  navigation arrows to point.
+ *  Next's enabled/disabled state comes from window._archLastKnownPage (ground truth from an
+ *  actual Firestore fetch), NOT from the passed-in totalPages label, which in 'paged' mode is
+ *  only an approximate count() estimate — Next must keep working even if that estimate is
+ *  off or "Show all" was never pressed. */
+function renderArchPaginationBar(totalPages) {
+  const bar = document.getElementById('arch-pagination');
+  if (!bar) return;
+  const page = window._archCurrentPage || 1;
+  const showAllControl = can('canManageUsers')
+    ? (window._archMode === 'all'
+        ? `<button class="btn btn-secondary btn-sm" onclick="exitArchShowAllMode()" style="margin-inline-start:12px;">↩️ ${t('backToPagedBtn')}</button>`
+        : `<button class="btn btn-secondary btn-sm" id="arch-show-all-btn" onclick="showAllArchive()" style="margin-inline-start:12px;">📋 ${t('showAllBtn')}</button>`)
+    : '';
+  const isLastPage = window._archMode === 'all'
+    ? page >= totalPages
+    : (window._archLastKnownPage != null && page >= window._archLastKnownPage);
+  const pageLabel = totalPages != null
+    ? t('pageOfLabel').replace('{page}', page).replace('{total}', totalPages)
+    : t('pageLabel').replace('{page}', page);
+  bar.innerHTML = `
+    <button class="btn btn-secondary btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="goToArchPage(${page - 1})">▶ ${t('prevPageBtn')}</button>
+    <span style="font-size:12px;color:var(--text-3);">${pageLabel}</span>
+    <button class="btn btn-secondary btn-sm" ${isLastPage ? 'disabled' : ''} onclick="goToArchPage(${page + 1})">◀ ${t('nextPageBtn')}</button>
+    ${showAllControl}
+  `;
+}
+
+/** Move to another page. In 'all' mode this just re-slices the already-fully-loaded set
+ *  (no Firestore call). In 'paged' mode it always fetches that page directly from Firestore
+ *  (or reuses the cache if it was already visited this session) — this is exactly the "next
+ *  100 orders" jump, independent of whether Show All has ever been used. */
+async function goToArchPage(page) {
+  if (page < 1) return;
+  if (window._archMode === 'all') {
+    const totalPages = Math.max(1, Math.ceil((window._filteredArchShips || []).length / ARCH_PAGE_SIZE));
+    window._archCurrentPage = Math.min(Math.max(1, page), totalPages);
+    renderArchTable();
+    return;
+  }
+  await archLoadFirestorePage(page);
 }
 
 /** Clear every filter/search control on the Archive page and re-apply — mirrors
@@ -2096,6 +2334,7 @@ async function unarchiveShipment(id) {
           const { archivedAt, archivedBy, ...data } = doc.data();
           await db.collection('sonick_shipments').doc(id).set(data);
           await db.collection('sonick_archive').doc(id).delete();
+          archCounterAdjust(-1);
         }
       }
       toast(t('orderUnarchived'), 'success');
@@ -2119,12 +2358,15 @@ async function unarchiveSelected() {
         const CHUNK = 200; // set+delete = 2 writes/doc, stay well under Firestore's 500-write batch limit
         for (let i = 0; i < docs.length; i += CHUNK) {
           const batch = db.batch();
+          let chunkCount = 0;
           docs.slice(i, i + CHUNK).forEach(doc => {
             if (!doc.exists) return;
             const { archivedAt, archivedBy, ...data } = doc.data();
             batch.set(db.collection('sonick_shipments').doc(doc.id), data);
             batch.delete(db.collection('sonick_archive').doc(doc.id));
+            chunkCount++;
           });
+          if (chunkCount) batch.set(archCounterDocRef(), { archivedCount: firebase.firestore.FieldValue.increment(-chunkCount) }, { merge: true });
           await batch.commit();
         }
       }
@@ -2142,6 +2384,7 @@ async function deleteArchivedShipment(id) {
   confirmAction(t('deleteArchivedConfirm'), t('cannotUndo'), async () => {
     try {
       if (db) await db.collection('sonick_archive').doc(id).delete();
+      archCounterAdjust(-1);
       toast(t('archivedOrderDeleted'), 'success');
       window._selectedArchIds?.delete(id);
       await refreshArchiveData();
@@ -2162,7 +2405,9 @@ async function deleteSelectedArchived() {
         const CHUNK = 400; // delete-only = 1 write/doc
         for (let i = 0; i < ids.length; i += CHUNK) {
           const batch = db.batch();
-          ids.slice(i, i + CHUNK).forEach(id => batch.delete(db.collection('sonick_archive').doc(id)));
+          const chunkIds = ids.slice(i, i + CHUNK);
+          chunkIds.forEach(id => batch.delete(db.collection('sonick_archive').doc(id)));
+          batch.set(archCounterDocRef(), { archivedCount: firebase.firestore.FieldValue.increment(-chunkIds.length) }, { merge: true });
           await batch.commit();
         }
       }

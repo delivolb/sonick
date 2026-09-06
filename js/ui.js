@@ -638,6 +638,7 @@ const EXPORT_COLUMN_DEFS = [
   { key: 'deliveryCost',          label: 'Delivery Cost',    width: 14, format: 'dollar' },
   { key: 'driverDeliveryCost',    label: 'Driver Cost',      width: 13, format: 'dollar', total: true },
   { key: 'contractorDeliveryCost',label: 'Contractor Cost',  width: 15, format: 'dollar', total: true },
+  { key: 'returnedDeliveryCost',  label: 'Returned Cost',    width: 14, format: 'dollar', total: true },
   { key: 'withdrawnAmountDollar', label: 'Withdrawn ($)',    width: 13, format: 'dollar', total: true },
   { key: 'withdrawnAmountLeb',    label: 'Withdrawn (L.L.)', width: 14, format: 'leb',    total: true },
   { key: 'date',                  label: 'Date',             width: 14, format: 'date'   },
@@ -661,6 +662,7 @@ function exportColumnTotal(col, ships) {
     case 'priceLeb':    return ships.reduce((t, s) => t + shipTotalLeb(s), 0);
     case 'driverDeliveryCost':
     case 'contractorDeliveryCost':
+    case 'returnedDeliveryCost':
     case 'deliveryProfit':
       return ships.reduce((t, s) => t + (isProfitEligible(s.status) ? (Number(s[col.key]) || 0) : 0), 0);
     default:
@@ -988,6 +990,14 @@ async function exportPDF(defaultName, shipsOverride) {
   let logoDataUrl = '';
   try { logoDataUrl = await imageToDataURL('assets/logo-mark.png'); } catch (e) { /* logo optional */ }
 
+  // Give every enabled column a legible minimum pixel width instead of squeezing them all
+  // into one fixed-width page — a report with many columns just gets a wider page (below),
+  // rather than shrinking every cell until the text is unreadable. c.width is the same
+  // character-count width already used for the Excel export, scaled to a comfortable px value.
+  const colPxWidths   = cols.map(c => Math.max(72, Math.round((c.width || 14) * 7.4)));
+  const REPORT_PAD_PX = 68; // matches #pdf-report-root's left+right padding (34px * 2)
+  const contentWidthPx = REPORT_PAD_PX + colPxWidths.reduce((a, b) => a + b, 0);
+
   const rowsHtml = sorted.map(s => {
     const style = EXPORT_STATUS_STYLE[s.status] || EXPORT_STATUS_STYLE['Pending'];
     const cells = cols.map(c => {
@@ -1000,7 +1010,7 @@ async function exportPDF(defaultName, shipsOverride) {
       else                             val = esc(s[c.key] || '—');
       const textColor = c.format === 'status' ? argbToCss(style.font) : '#1F2937';
       const fontWeight = c.format === 'status' ? '700' : '400';
-      return `<td style="padding:6px 5px;border:1px solid #B8C2D9;text-align:center;color:${textColor};font-weight:${fontWeight};">${val}</td>`;
+      return `<td style="padding:6px 5px;border:1px solid #B8C2D9;text-align:center;color:${textColor};font-weight:${fontWeight};overflow-wrap:break-word;">${val}</td>`;
     }).join('');
     return `<tr style="background:${argbToCss(style.fill)};">${cells}</tr>`;
   }).join('');
@@ -1016,7 +1026,7 @@ async function exportPDF(defaultName, shipsOverride) {
   }).join('');
 
   const reportHTML = `
-    <div id="pdf-report-root" style="width:1120px;background:#ffffff;font-family:'Calibri','Segoe UI',Arial,sans-serif;color:#1F2937;padding:30px 34px;">
+    <div id="pdf-report-root" style="width:${contentWidthPx}px;background:#ffffff;font-family:'Calibri','Segoe UI',Arial,sans-serif;color:#1F2937;padding:30px 34px;">
       <div style="display:flex;align-items:center;gap:16px;border-bottom:3px solid #4F6EF5;padding-bottom:16px;margin-bottom:14px;">
         ${logoDataUrl ? `<img src="${logoDataUrl}" style="width:52px;height:52px;object-fit:contain;">` : ''}
         <div>
@@ -1028,10 +1038,11 @@ async function exportPDF(defaultName, shipsOverride) {
           <div>${sorted.length} ${t('shipments')}</div>
         </div>
       </div>
-      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed;">
+        <colgroup>${colPxWidths.map(w => `<col style="width:${w}px;">`).join('')}</colgroup>
         <thead>
           <tr style="background:#3A54D6;color:#ffffff;">
-            ${cols.map(c => `<th style="padding:8px 5px;border:1px solid #2A3FA0;text-align:center;color:#ffffff;font-weight:700;text-transform:none;">${esc(c.label)}</th>`).join('')}
+            ${cols.map(c => `<th style="padding:8px 5px;border:1px solid #2A3FA0;text-align:center;color:#ffffff;font-weight:700;text-transform:none;overflow-wrap:break-word;">${esc(c.label)}</th>`).join('')}
           </tr>
         </thead>
         <tbody>${rowsHtml}</tbody>
@@ -1064,8 +1075,16 @@ async function exportPDF(defaultName, shipsOverride) {
     const target = container.querySelector('#pdf-report-root');
     const canvas = await html2canvas(target, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
 
+    // Page width matches the report's actual content width (capped so extreme column counts
+    // don't produce an unwieldy page) instead of always forcing it into a fixed A4 portrait
+    // width — that's what was squeezing/cutting off columns when many were enabled. Page
+    // height stays at standard A4 height; addCanvasAsPaginatedPDF still paginates vertically.
+    const A4_PORTRAIT_WIDTH_PT = 595.28, A4_HEIGHT_PT = 841.89;
+    const PX_TO_PT = 0.75; // standard 96dpi(css px) -> 72pt conversion
+    const pagePtWidth = Math.max(A4_PORTRAIT_WIDTH_PT, Math.min(contentWidthPx * PX_TO_PT, 2200));
+
     const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF('p', 'pt', 'a4');
+    const pdf = new jsPDF({ unit: 'pt', format: [pagePtWidth, A4_HEIGHT_PT] });
     const imgWidth = pdf.internal.pageSize.getWidth();
 
     // Slices the canvas into its own correctly-cropped image per page (see
@@ -1450,6 +1469,12 @@ async function exportSettlementExcel() {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Sonick Delivery System';
   workbook.created = new Date();
+  // This sheet's totals/summary cells are written as live Excel formulas (SUM, cross-sheet
+  // references, etc.) rather than plain numbers, so they have no cached result baked in.
+  // Without this flag Excel shows those cells blank until the file is fully recalculated
+  // (e.g. after clicking "Enable Editing" out of Protected View, or pressing Ctrl+Alt+F9) —
+  // fullCalcOnLoad tells Excel to recalculate everything the moment the file opens.
+  workbook.calcProperties = { fullCalcOnLoad: true };
 
   const titleBand = (sheet, colCount, title, accent, subtitle) => {
     sheet.mergeCells(1, 1, 1, colCount);
@@ -1480,14 +1505,16 @@ async function exportSettlementExcel() {
   };
 
   // ---- Sheet 1: Driver Settlement ----
+  // Column order mirrors the "الكشف العام" (General Statement) page's own driver table
+  // exactly: #, driver, Total $, Total L.L., Driver Profit, Old Balance (manual), Net Account.
   const driverCols = [
     { label: '#',                                  fmt: 'number' },
     { label: t('driver'),                          fmt: 'text'   },
-    { label: t('settlementColNetAccount'),         fmt: 'dollar' },
-    { label: t('settlementColOldBalanceDollar'),   fmt: 'dollar', manual: true },
-    { label: t('settlementColDriverProfit'),       fmt: 'dollar' },
     { label: t('settlementColTotalDollar'),        fmt: 'dollar' },
     { label: t('settlementColTotalLeb'),           fmt: 'leb'    },
+    { label: t('settlementColDriverProfit'),       fmt: 'dollar' },
+    { label: t('settlementColOldBalanceDollar'),   fmt: 'dollar', manual: true },
+    { label: t('settlementColNetAccount'),         fmt: 'dollar' },
   ];
   const dSheet = workbook.addWorksheet(t('settlementSheetDriverTitle').slice(0, 31), { views: [{ state: 'frozen', ySplit: 3, rightToLeft: isRTL }] });
   const driverEntries = Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count);
@@ -1497,9 +1524,15 @@ async function exportSettlementExcel() {
   headerRowStyle(dHeaderRow, C.brandDark);
   dSheet.columns = driverCols.map((c, i) => ({ width: i === 1 ? 26 : 16 }));
 
+  // Accumulated in JS alongside the rows so the SUM formulas below can carry a matching
+  // cached `result` — Excel shows that cached number immediately (even before any
+  // recalculation, e.g. while still in Protected View), and still recalculates live off the
+  // real formula the moment the user edits an Old Balance cell after enabling editing.
+  let totalDol = 0, totalLeb = 0, totalDriverProfit = 0, totalNetAccount = 0;
   driverEntries.forEach(([name, v], idx) => {
     const netAccount = v.dol - (v.cost || 0);
-    const row = dSheet.addRow([{ formula: 'ROW()-3' }, name, netAccount, null, v.cost || 0, v.dol, v.leb || 0]);
+    totalDol += v.dol || 0; totalLeb += v.leb || 0; totalDriverProfit += v.cost || 0; totalNetAccount += netAccount;
+    const row = dSheet.addRow([{ formula: 'ROW()-3', result: idx + 1 }, name, v.dol, v.leb || 0, v.cost || 0, null, netAccount]);
     const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : C.rowAlt;
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
       const col = driverCols[colNum - 1];
@@ -1514,9 +1547,11 @@ async function exportSettlementExcel() {
 
   const driverTotalRowIdx = dSheet.rowCount + 1;
   const dTotalRow = dSheet.addRow(['', `${t('settlementGrandTotalLabel')} (${driverEntries.length})`,
-    { formula: `SUM(C4:C${driverTotalRowIdx - 1})` }, { formula: `SUM(D4:D${driverTotalRowIdx - 1})` },
-    { formula: `SUM(E4:E${driverTotalRowIdx - 1})` }, { formula: `SUM(F4:F${driverTotalRowIdx - 1})` },
-    { formula: `SUM(G4:G${driverTotalRowIdx - 1})` }]);
+    { formula: `SUM(C4:C${driverTotalRowIdx - 1})`, result: totalDol },
+    { formula: `SUM(D4:D${driverTotalRowIdx - 1})`, result: totalLeb },
+    { formula: `SUM(E4:E${driverTotalRowIdx - 1})`, result: totalDriverProfit },
+    { formula: `SUM(F4:F${driverTotalRowIdx - 1})`, result: 0 },
+    { formula: `SUM(G4:G${driverTotalRowIdx - 1})`, result: totalNetAccount }]);
   dTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
     const col = driverCols[colNum - 1];
     cell.font = { bold: true, color: { argb: C.ink } };
@@ -1555,6 +1590,8 @@ async function exportSettlementExcel() {
   headerRowStyle(cHeaderRow, 'FF8A3FE0');
   cSheet.columns = compCols.map((c, i) => ({ width: i === 1 || i === 4 ? 22 : 15 }));
 
+  let totalCompanyDol = 0, totalCompanyLeb = 0, totalContractorDol = 0, totalContractorFee = 0,
+      totalContractorNet = 0, totalContractorLeb = 0, totalNetDol = 0, totalNetLeb = 0;
   entities.forEach((e, idx) => {
     // Keep in sync with pages.js (renderGeneralStatement / recalcGeneralStatementTotals):
     // company revenue minus our profit share, matching "Amount Due to Company" elsewhere.
@@ -1566,16 +1603,19 @@ async function exportSettlementExcel() {
     const contractorLeb = e.contractor?.leb || 0;
     const netDol = companyDol - contractorNet;
     const netLeb = companyLeb - contractorLeb;
+    totalCompanyDol += companyDol; totalCompanyLeb += companyLeb; totalContractorDol += contractorDol;
+    totalContractorFee += contractorFee; totalContractorNet += contractorNet; totalContractorLeb += contractorLeb;
+    totalNetDol += netDol; totalNetLeb += netLeb;
 
     const row = cSheet.addRow([
-      { formula: 'ROW()-3' },
+      { formula: 'ROW()-3', result: idx + 1 },
       e.company ? e.name : '-', companyDol, companyLeb,
       e.contractor ? e.name : '-', contractorDol, contractorFee, contractorNet, contractorLeb,
       netDol, netLeb, null, null, null, null,
     ]);
     const rowIdx = row.number;
-    row.getCell(14).value = { formula: `J${rowIdx}+L${rowIdx}` };
-    row.getCell(15).value = { formula: `K${rowIdx}+M${rowIdx}` };
+    row.getCell(14).value = { formula: `J${rowIdx}+L${rowIdx}`, result: netDol };
+    row.getCell(15).value = { formula: `K${rowIdx}+M${rowIdx}`, result: netLeb };
 
     const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF3EBFF';
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
@@ -1591,11 +1631,11 @@ async function exportSettlementExcel() {
 
   const compTotalRowIdx = cSheet.rowCount + 1;
   const colLetterAt = i => String.fromCharCode(65 + i);
-  const sumFormula = (colIdx) => ({ formula: `SUM(${colLetterAt(colIdx)}4:${colLetterAt(colIdx)}${compTotalRowIdx - 1})` });
+  const sumFormula = (colIdx, result) => ({ formula: `SUM(${colLetterAt(colIdx)}4:${colLetterAt(colIdx)}${compTotalRowIdx - 1})`, result });
   const cTotalRow = cSheet.addRow([
-    '', `${t('total')} (${entities.length})`, sumFormula(2), sumFormula(3), '',
-    sumFormula(5), sumFormula(6), sumFormula(7), sumFormula(8),
-    sumFormula(9), sumFormula(10), sumFormula(11), sumFormula(12), sumFormula(13), sumFormula(14),
+    '', `${t('total')} (${entities.length})`, sumFormula(2, totalCompanyDol), sumFormula(3, totalCompanyLeb), '',
+    sumFormula(5, totalContractorDol), sumFormula(6, totalContractorFee), sumFormula(7, totalContractorNet), sumFormula(8, totalContractorLeb),
+    sumFormula(9, totalNetDol), sumFormula(10, totalNetLeb), sumFormula(11, 0), sumFormula(12, 0), sumFormula(13, totalNetDol), sumFormula(14, totalNetLeb),
   ]);
   cTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
     const col = compCols[colNum - 1];
@@ -1627,8 +1667,11 @@ async function exportSettlementExcel() {
   const companiesFinalLebFormula = `'${cSheet.name}'!O${compTotalRowIdx}`;
   const contractorFeeTotalFormula = `'${cSheet.name}'!G${compTotalRowIdx}`;
 
+  const officeProfitTotal   = totalNetAccount - totalNetDol;
+  const combinedProfitTotal = officeProfitTotal + totalDriverProfit + totalContractorFee;
+
   let sumRow = dSheet.rowCount + 3;
-  const addSummaryRow = (labelKey, dollarFormula, lebFormula, color) => {
+  const addSummaryRow = (labelKey, dollarFormula, lebFormula, color, dollarResult, lebResult) => {
     dSheet.mergeCells(sumRow, 1, sumRow, 4);
     const labelCell = dSheet.getCell(sumRow, 1);
     labelCell.value = t(labelKey);
@@ -1637,7 +1680,7 @@ async function exportSettlementExcel() {
     labelCell.alignment = { vertical: 'middle', horizontal: isRTL ? 'right' : 'left', indent: 1 };
 
     const dolCell = dSheet.getCell(sumRow, 5);
-    dolCell.value = dollarFormula ? { formula: dollarFormula } : '';
+    dolCell.value = dollarFormula ? { formula: dollarFormula, result: dollarResult } : '';
     dolCell.numFmt = '"$"#,##0.00';
     dolCell.font = { bold: true, size: 12, color: { argb: C.ink } };
     dolCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
@@ -1646,7 +1689,7 @@ async function exportSettlementExcel() {
     if (lebFormula) {
       dSheet.mergeCells(sumRow, 6, sumRow, 7);
       const lebCell = dSheet.getCell(sumRow, 6);
-      lebCell.value = { formula: lebFormula };
+      lebCell.value = { formula: lebFormula, result: lebResult };
       lebCell.numFmt = '#,##0';
       lebCell.font = { bold: true, size: 12, color: { argb: C.ink } };
       lebCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.paleGray } };
@@ -1665,13 +1708,13 @@ async function exportSettlementExcel() {
   dSheet.getRow(sumRow).height = 26;
   sumRow += 2;
 
-  addSummaryRow('settlementNetCompaniesLabel',      companiesNetDolFormula,   companiesNetLebFormula,   C.purple);
-  addSummaryRow('settlementCompaniesFinalLabel',    companiesFinalDolFormula, companiesFinalLebFormula, C.purple);
-  addSummaryRow('settlementOfficeProfitLabel',      `C${driverTotalRowIdx}-(${companiesNetDolFormula})`, null, C.green);
-  addSummaryRow('settlementDriverProfitTotalLabel', `E${driverTotalRowIdx}`,  null, C.green);
-  addSummaryRow('settlementContractorProfitTotalLabel', contractorFeeTotalFormula, null, C.green);
+  addSummaryRow('settlementNetCompaniesLabel',      companiesNetDolFormula,   companiesNetLebFormula,   C.purple, totalNetDol, totalNetLeb);
+  addSummaryRow('settlementCompaniesFinalLabel',    companiesFinalDolFormula, companiesFinalLebFormula, C.purple, totalNetDol, totalNetLeb);
+  addSummaryRow('settlementOfficeProfitLabel',      `G${driverTotalRowIdx}-(${companiesNetDolFormula})`, null, C.green, officeProfitTotal);
+  addSummaryRow('settlementDriverProfitTotalLabel', `E${driverTotalRowIdx}`,  null, C.green, totalDriverProfit);
+  addSummaryRow('settlementContractorProfitTotalLabel', contractorFeeTotalFormula, null, C.green, totalContractorFee);
   const combinedRow = sumRow;
-  addSummaryRow('settlementCombinedProfitLabel', `E${combinedRow - 3}+E${combinedRow - 2}+E${combinedRow - 1}`, null, C.brandDark);
+  addSummaryRow('settlementCombinedProfitLabel', `E${combinedRow - 3}+E${combinedRow - 2}+E${combinedRow - 1}`, null, C.brandDark, combinedProfitTotal);
 
   sumRow += 1;
   dSheet.mergeCells(sumRow, 1, sumRow, driverCols.length);
