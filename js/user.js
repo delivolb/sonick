@@ -179,7 +179,7 @@ async function loadViewerProfile(user) {
     applyUserLang();
     await loadReferenceCaches();
     subscribeOrders();
-    subscribeArchive();
+    await initArchivePaging();
     registerViewerServiceWorker();
   } catch (e) {
     try { await auth.signOut(); } catch (_) { /* ignore */ }
@@ -243,7 +243,6 @@ async function loadReferenceCaches() {
 
 // ===== DATA (live-synced — read only, never written to from this page) =====
 let _ordersUnsub  = null;
-let _archiveUnsub = null;
 
 /** Any shipment/archive doc saved before Order Type existed has no orderType value —
  *  default it to 'Normal' for DISPLAY ONLY. Unlike the admin app, this page never
@@ -264,20 +263,164 @@ function subscribeOrders() {
     }, e => toast(t('error') + e.message, 'error'));
 }
 
-function subscribeArchive() {
-  if (_archiveUnsub) { _archiveUnsub(); _archiveUnsub = null; }
-  _archiveUnsub = db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(500)
-    .onSnapshot(snap => {
-      allArchive = normalizeOrderType(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      const countEl = document.getElementById('tab-archive-count');
-      if (countEl) countEl.textContent = allArchive.length;
-      if (activeTab === 'archive') applyUserFilters();
-    }, e => toast(t('error') + e.message, 'error'));
+// ===== ARCHIVE PAGINATION =====
+// The archive can hold thousands of orders, far beyond what's sensible to hold in one live
+// snapshot. Instead of a single onSnapshot(...).limit(500) (which silently capped the whole
+// tab at 500 regardless of true size), this loads one real Firestore page at a time — same
+// approach as the admin Archive page (ARCH_PAGE_SIZE + startAfter cursors + admin-only Show
+// All escape hatch). Orders (sonick_shipments) stays a live subscription above, since
+// active-order counts rarely approach the old cap.
+const ARCH_PAGE_SIZE = 100;
+let _archMode             = 'paged'; // 'paged' (real Firestore pages) or 'all' (admin-only, whole collection loaded)
+let _archPageCache        = {};
+let _archPageStartCursors = {};
+let _archCurrentPage      = 1;
+let _archLastKnownPage    = null; // set once a page comes back short/empty — ground truth for Next
+let _archTotalCount       = null; // true total, read from the same counter doc the admin app maintains
+
+/** Reads the maintained sonick_meta/counters doc for the true archive size (1 read) — this
+ *  portal never writes to it, only reads (firestore.rules: sonick_meta read: isStaff()).
+ *  Used only for the tab badge and the "Page X of Y" label; Next/Prev availability always
+ *  comes from an actual page fetch (_archLastKnownPage), never from this estimate. */
+async function archFetchTotalCount() {
+  _archTotalCount = null;
+  if (!db) return;
+  try {
+    const doc = await db.collection('sonick_meta').doc('counters').get();
+    if (doc.exists && typeof doc.data().archivedCount === 'number') {
+      _archTotalCount = Math.max(0, doc.data().archivedCount);
+    }
+  } catch (e) { /* badge just omits the "/ total" part */ }
+  const countEl = document.getElementById('tab-archive-count');
+  if (countEl) countEl.textContent = _archTotalCount != null ? _archTotalCount : (allArchive.length || 0);
 }
+
+/** Loads one page directly from Firestore (or from cache if already visited this session). */
+async function archLoadPage(page) {
+  if (page < 1) return;
+  if (_archLastKnownPage != null && page > _archLastKnownPage) return; // proven not to exist
+  if (_archPageCache[page]) {
+    allArchive = _archPageCache[page];
+    if (allArchive.length < ARCH_PAGE_SIZE) _archLastKnownPage = page;
+    _archCurrentPage = page;
+    applyUserFilters();
+    renderArchPaginationBar();
+    return;
+  }
+  if (!db) return;
+  const bar = document.getElementById('user-pagination');
+  if (bar) bar.style.opacity = '0.6';
+  try {
+    let q = db.collection('sonick_archive').orderBy('archivedAt', 'desc').limit(ARCH_PAGE_SIZE);
+    const startCursor = _archPageStartCursors[page];
+    if (startCursor) q = q.startAfter(startCursor);
+    const snap = await q.get();
+
+    if (!snap.docs.length && page > 1) {
+      // Overshot: previous page looked full but was actually the last one. Stay put.
+      _archLastKnownPage = page - 1;
+      toast(t('noMoreArchivedOrders'), 'info');
+      renderArchPaginationBar();
+      return;
+    }
+
+    const rows = normalizeOrderType(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    _archPageCache[page] = rows;
+    if (rows.length < ARCH_PAGE_SIZE) _archLastKnownPage = page;
+    if (snap.docs.length) _archPageStartCursors[page + 1] = snap.docs[snap.docs.length - 1];
+    allArchive       = rows;
+    _archCurrentPage = page;
+    applyUserFilters();
+    renderArchPaginationBar();
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+  finally { if (bar) bar.style.opacity = '1'; }
+}
+
+function goToUserArchPage(page) { archLoadPage(page); }
+
+/** Prev/Next + page label + admin-only Show All control, shown only while the Archive tab
+ *  is active. In 'all' mode there's nothing to page through (the whole collection is already
+ *  loaded and results are simply capped/searched client-side), so this just offers a way back
+ *  to efficient paged reads. */
+function renderArchPaginationBar() {
+  const bar = document.getElementById('user-pagination');
+  if (!bar) return;
+  if (activeTab !== 'archive') { bar.innerHTML = ''; return; }
+
+  const showAllControl = (currentViewer && currentViewer.role === 'admin')
+    ? (_archMode === 'all'
+        ? `<button class="btn btn-secondary btn-sm" onclick="exitUserArchShowAllMode()">↩️ ${t('backToPagedBtn')}</button>`
+        : `<button class="btn btn-secondary btn-sm" onclick="showAllUserArchive()">📋 ${t('showAllBtn')}</button>`)
+    : '';
+
+  if (_archMode === 'all') {
+    bar.innerHTML = showAllControl;
+    return;
+  }
+
+  const page = _archCurrentPage || 1;
+  const totalPages = _archLastKnownPage ?? (_archTotalCount != null ? Math.ceil(_archTotalCount / ARCH_PAGE_SIZE) : null);
+  const isLastPage = _archLastKnownPage != null && page >= _archLastKnownPage;
+  const pageLabel = totalPages != null
+    ? t('pageOfLabel').replace('{page}', page).replace('{total}', totalPages)
+    : t('pageLabel').replace('{page}', page);
+  bar.innerHTML = `
+    <button class="btn btn-secondary btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="goToUserArchPage(${page - 1})">▶ ${t('prevPageBtn')}</button>
+    <span>${pageLabel}</span>
+    <button class="btn btn-secondary btn-sm" ${isLastPage ? 'disabled' : ''} onclick="goToUserArchPage(${page + 1})">◀ ${t('nextPageBtn')}</button>
+    ${showAllControl}
+  `;
+}
+
+/** Resets all paging state and loads page 1 — called on login (and re-armed on logout) so a
+ *  fresh session, or a different account on a shared browser, never sees stale pages. */
+async function initArchivePaging() {
+  _archMode             = 'paged';
+  _archPageCache        = {};
+  _archPageStartCursors = {};
+  _archCurrentPage      = 1;
+  _archLastKnownPage    = null;
+  await archFetchTotalCount();
+  await archLoadPage(1);
+}
+
+/** Admin-only escape hatch (mirrors the admin Archive page's Show All): loads the entire
+ *  sonick_archive collection at once for the rare case someone genuinely needs to search
+ *  across everything in one go. Costs one read per archived order, so it's gated to the
+ *  admin role and asks for confirmation first — this portal is read-only either way. */
+async function showAllUserArchive() {
+  if (!currentViewer || currentViewer.role !== 'admin') return;
+  if (!confirm(`${t('showAllConfirmTitle')}\n\n${t('showAllConfirmMsg')}`)) return;
+  const bar = document.getElementById('user-pagination');
+  if (bar) bar.style.opacity = '0.6';
+  try {
+    if (db) {
+      const snap = await db.collection('sonick_archive').orderBy('archivedAt', 'desc').get();
+      allArchive = normalizeOrderType(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      _archTotalCount = allArchive.length;
+      const countEl = document.getElementById('tab-archive-count');
+      if (countEl) countEl.textContent = _archTotalCount;
+    }
+    _archMode        = 'all';
+    _archCurrentPage = 1;
+    applyUserFilters();
+    renderArchPaginationBar();
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+  finally { if (bar) bar.style.opacity = '1'; }
+}
+
+/** Leave Show-All mode and go back to efficient per-page Firestore reads. */
+async function exitUserArchShowAllMode() { await initArchivePaging(); }
 
 function unsubscribeAll() {
   if (_ordersUnsub)  { _ordersUnsub();  _ordersUnsub  = null; }
-  if (_archiveUnsub) { _archiveUnsub(); _archiveUnsub = null; }
+  _archMode             = 'paged';
+  _archPageCache        = {};
+  _archPageStartCursors = {};
+  _archCurrentPage      = 1;
+  _archLastKnownPage    = null;
+  _archTotalCount       = null;
+  allArchive = [];
 }
 
 // ===== TABS =====
@@ -287,6 +430,7 @@ function switchUserTab(tab) {
   const searchEl = document.getElementById('user-search');
   if (searchEl) searchEl.placeholder = tab === 'orders' ? t('searchShipments') : t('searchArchive');
   applyUserFilters();
+  renderArchPaginationBar();
 }
 
 // ===== FILTER SHEET =====

@@ -1658,6 +1658,22 @@ async function deleteShipment(id) {
   });
 }
 
+/** Resets the manual "Old Balance" yellow-cell entries on the General Statement page
+ *  (driver + company/contractor) back to empty, both in Firestore (sonick_settings/general)
+ *  and in the in-memory settlementOldBalances used to prefill those inputs — called right
+ *  after an archive action succeeds, since archiving a batch of orders represents settling
+ *  them, and any outside-system balance that was carried in no longer applies to the next
+ *  period. Best-effort: never blocks or fails the archive action itself.
+ *  IMPORTANT: uses mergeFields (not merge:true) — see saveSettlementOldBalances() below for
+ *  why plain merge:true can't actually clear a nested map field. */
+async function resetSettlementOldBalances() {
+  try {
+    const empty = { driver: {}, entity: {} };
+    if (db) await db.collection('sonick_settings').doc('general').set({ settlementOldBalances: empty }, { mergeFields: ['settlementOldBalances'] });
+    settlementOldBalances = empty;
+  } catch (e) { /* best-effort — archiving already succeeded regardless */ }
+}
+
 async function archiveShipment(id) {
   if (!can('canArchive')) { toast(t('noPermission'), 'error'); return; }
   confirmAction(t('archiveShipmentConfirm'), t('archiveMsg'), async () => {
@@ -1674,6 +1690,7 @@ async function archiveShipment(id) {
           archCounterAdjust(1);
         }
       }
+      await resetSettlementOldBalances();
       toast(t('shipmentArchived'), 'success');
       renderShipments();
     } catch (e) { toast(t('error') + e.message, 'error'); }
@@ -1723,6 +1740,7 @@ async function archiveFilteredShipments() {
       }
       toast(`${eligible.length} ${t('ordersArchivedLabel')}`, 'success');
       window._selectedShipIds = new Set();
+      await resetSettlementOldBalances();
       await refreshShipmentsData();
     } catch (e) { toast(t('error') + e.message, 'error'); }
   });
@@ -1980,6 +1998,8 @@ async function renderArchive() {
   </div>
   </div>
 
+  <div id="arch-pagination" style="display:flex;align-items:center;gap:10px;padding:10px 16px;flex-wrap:wrap;background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);"></div>
+
   <div class="table-container desktop-table">
     <div class="table-header">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -2006,7 +2026,6 @@ async function renderArchive() {
         <tbody id="arch-tbody"></tbody>
       </table>
     </div>
-    <div id="arch-pagination" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-top:1px solid var(--border-2);flex-wrap:wrap;"></div>
   </div>
   <div class="mobile-cards" id="arch-mobile"></div>`;
 
@@ -2938,7 +2957,6 @@ async function renderGeneralStatement() {
   }
 
   const headerActions =
-    (can('canManageUsers') ? `<button class="btn btn-secondary btn-sm" onclick="saveSettlementOldBalances()">💾 ${t('settlementSaveBalancesBtn')}</button>` : '') +
     (can('canExport') ? `<button class="btn btn-primary btn-sm" onclick="exportSettlementExcel()">${ICONS.excelFile} ${t('settlementExportBtn')}</button>` : '');
 
   const driverEntries = Object.entries(byDriver).filter(([k]) => k !== '—').sort((a, b) => b[1].count - a[1].count);
@@ -2958,7 +2976,7 @@ async function renderGeneralStatement() {
       <td class="font-mono">$${formatNum(v.dol)}</td>
       <td class="font-mono">${v.leb ? formatNum(v.leb) : '—'}</td>
       <td class="font-mono" style="color:var(--green);">$${formatNum(v.cost || 0)}</td>
-      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" value="${savedLL || savedLL === 0 ? savedLL : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:110px;padding:4px 8px;font-size:0.8rem;" id="stmt-drv-oldbal-${idx}" value="${savedLL || savedLL === 0 ? savedLL : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals(); autoSaveSettlementOldBalances();" onkeydown="handleSettlementOldBalanceKeydown(event)"></td>
       <td class="font-mono" id="stmt-drv-net-${idx}">$${formatNum(v.dol - (v.cost || 0))}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="7" class="table-empty"><p>No data</p></td></tr>`;
@@ -2989,8 +3007,8 @@ async function renderGeneralStatement() {
       <td class="font-mono">${contractorLeb ? formatNum(contractorLeb) : '—'}</td>
       <td class="font-mono">$${formatNum(netDol)}</td>
       <td class="font-mono">${netLeb ? formatNum(netLeb) : '—'}</td>
-      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-dollar-${idx}" value="${savedDol || savedDol === 0 ? savedDol : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
-      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-leb-${idx}" value="${savedLeb || savedLeb === 0 ? savedLeb : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals()"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-dollar-${idx}" value="${savedDol || savedDol === 0 ? savedDol : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals(); autoSaveSettlementOldBalances();" onkeydown="handleSettlementOldBalanceKeydown(event)"></td>
+      <td><input type="number" step="0.01" class="form-input" style="width:100px;padding:4px 8px;font-size:0.8rem;" id="stmt-comp-oldbal-leb-${idx}" value="${savedLeb || savedLeb === 0 ? savedLeb : ''}" placeholder="${t('statementOldBalancePlaceholder')}" oninput="recalcGeneralStatementTotals(); autoSaveSettlementOldBalances();" onkeydown="handleSettlementOldBalanceKeydown(event)"></td>
       <td class="font-mono" id="stmt-comp-final-dollar-${idx}">$${formatNum(netDol)}</td>
       <td class="font-mono" id="stmt-comp-final-leb-${idx}">${netLeb ? formatNum(netLeb) : '—'}</td>
     </tr>`;
@@ -3077,8 +3095,23 @@ async function renderGeneralStatement() {
 /** Reads every "Old Balance" yellow input currently on the General Statement page (driver
  *  L.L. balances + company/contractor $ and L.L. balances) and persists them to
  *  sonick_settings/general so they survive a page reload/navigation instead of resetting —
- *  same doc + save pattern as saveDollarRate()/saveExportColumns() in Settings. */
-async function saveSettlementOldBalances() {
+ *  same doc + save pattern as saveDollarRate()/saveExportColumns() in Settings.
+ *  Bails out without writing anything if the Statement page's inputs aren't in the DOM right
+ *  now (e.g. the admin already navigated to another page) — otherwise this would read back
+ *  nothing for every field and overwrite Firestore with an empty balance set.
+ *  IMPORTANT: writes with { mergeFields: ['settlementOldBalances'] }, NOT { merge: true }.
+ *  A driver/entity that's set back to 0 is deliberately left OUT of driverBalances/
+ *  entityBalances below (0 == "no old balance"), so the payload for that entry has no key at
+ *  all — but plain merge:true does a *deep* merge on nested map fields, so any key that's
+ *  simply missing from the new object is left completely untouched in Firestore rather than
+ *  removed. That silently kept the OLD value forever (this was the bug where clearing a
+ *  balance to 0 and saving looked successful but reverted after a refresh). mergeFields on
+ *  the top-level 'settlementOldBalances' path makes this a full replace of that one field —
+ *  every key not present in the new payload is actually gone — while every other field in the
+ *  same sonick_settings/general doc (dollar rate, export columns, etc.) stays untouched. */
+async function saveSettlementOldBalances(silent) {
+  if (!document.getElementById('stmt-drv-net-total')) return; // Statement page isn't mounted — nothing safe to read
+
   const driverNames = window._statementDriverNames || [];
   const entities     = window._statementEntities || [];
 
@@ -3100,10 +3133,44 @@ async function saveSettlementOldBalances() {
 
   const payload = { driver: driverBalances, entity: entityBalances };
   try {
-    if (db) await db.collection('sonick_settings').doc('general').set({ settlementOldBalances: payload }, { merge: true });
+    if (db) await db.collection('sonick_settings').doc('general').set({ settlementOldBalances: payload }, { mergeFields: ['settlementOldBalances'] });
     settlementOldBalances = payload;
-    toast(t('settlementBalancesSaved'), 'success');
+    if (!silent) toast(t('settlementBalancesSaved'), 'success');
   } catch (e) { toast(t('error') + e.message, 'error'); }
+}
+
+/** Debounced auto-save wired to every Old Balance input's oninput — waits for a short pause
+ *  in typing (rather than saving on every keystroke) before writing to Firestore, then
+ *  confirms with a toast so the admin can actually see it saved (silent auto-save gave no
+ *  feedback, which is why missed saves went unnoticed). */
+let _settlementAutoSaveTimer = null;
+function autoSaveSettlementOldBalances() {
+  clearTimeout(_settlementAutoSaveTimer);
+  _settlementAutoSaveTimer = setTimeout(() => { saveSettlementOldBalances(false); }, 700);
+}
+
+/** Called right before navigating away from the Statement page: if an edit's debounced save
+ *  hasn't fired yet, cancel the timer and save immediately (synchronously, while the input
+ *  elements the save needs to read are still in the DOM) instead of letting it fire later
+ *  against a page that's already been replaced. */
+function flushPendingSettlementSave() {
+  if (!_settlementAutoSaveTimer) return;
+  clearTimeout(_settlementAutoSaveTimer);
+  _settlementAutoSaveTimer = null;
+  saveSettlementOldBalances(false);
+}
+
+/** Enter in an Old Balance field saves right away instead of waiting out the ~0.7s debounce —
+ *  also blurs the field so the number spinner/focus ring drops, giving a clear "done" moment.
+ *  Without this, Enter did nothing special: it fell through to the same debounce timer as any
+ *  other keystroke, which is easy to mistake for "Enter doesn't save". */
+function handleSettlementOldBalanceKeydown(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  clearTimeout(_settlementAutoSaveTimer);
+  _settlementAutoSaveTimer = null;
+  saveSettlementOldBalances(false);
+  event.target.blur();
 }
 
 /** Recompute the Companies & Contractors table's Final Statement cells/footer and the
