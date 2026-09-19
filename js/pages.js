@@ -1688,6 +1688,7 @@ async function archiveShipment(id) {
           });
           await db.collection('sonick_shipments').doc(id).delete();
           archCounterAdjust(1);
+          archInvalidateFullCache();
         }
       }
       await resetSettlementOldBalances();
@@ -1738,6 +1739,7 @@ async function archiveFilteredShipments() {
           await batch.commit();
         }
       }
+      archInvalidateFullCache();
       toast(`${eligible.length} ${t('ordersArchivedLabel')}`, 'success');
       window._selectedShipIds = new Set();
       await resetSettlementOldBalances();
@@ -1759,7 +1761,99 @@ async function archiveFilteredShipments() {
  *  loaded, so Prev/Next just re-slice it in memory. */
 const ARCH_PAGE_SIZE = 100;
 
+// ---- Whole-archive search -------------------------------------------------------------------
+// In 'paged' mode only ONE Firestore page (100 orders) is in memory, so a search box that just
+// filters that page can never find an older order. As soon as either search box (general or
+// phone) has text, the Archive page therefore loads the ENTIRE archive once, keeps it in memory
+// (ARCH_FULL_TTL_MS) and searches/filters/paginates that instead. Clearing the search boxes
+// returns to the normal cheap paged view. Cost: one read per archived order on the first search,
+// then zero until the cache expires or the archive is changed from this browser.
+const ARCH_FULL_TTL_MS = 10 * 60 * 1000;
+let _archFullCache       = null;   // { ships: [...], loadedAt: ms }
+let _archFullLoadPromise = null;   // de-dupes concurrent loads while typing
+let _archSearchTimer     = null;   // debounce timer for the full load
+let _archSearchLoading   = false;  // true while the full archive is being fetched
+window._archSearchPage   = 1;      // in-memory page number while a whole-archive search is showing
+
+/** True when the general search box or the phone search box has any text. */
+function archSearchActive() {
+  return !!((document.getElementById('arch-search')?.value || '').trim()
+         || (document.getElementById('arch-phone-search')?.value || '').trim());
+}
+function archFullCacheFresh() {
+  return !!_archFullCache && (Date.now() - _archFullCache.loadedAt) < ARCH_FULL_TTL_MS;
+}
+/** Drop the cached whole-archive copy — call after anything that adds/removes archive docs. */
+function archInvalidateFullCache() { _archFullCache = null; }
+/** True while the table is being fed from the whole-archive copy (a search is active and it's loaded). */
+function archUseFullSet() {
+  return window._archMode !== 'all' && !!db && archSearchActive() && archFullCacheFresh();
+}
+/** True when pages are sliced in memory (Show All mode, or a whole-archive search). */
+function archInMemoryMode() { return window._archMode === 'all' || archUseFullSet(); }
+/** Which window.* field holds the current in-memory page number. */
+function archMemPageKey() { return window._archMode === 'all' ? '_archCurrentPage' : '_archSearchPage'; }
+
+/** archivedAt (Firestore Timestamp / Date / ISO string) → epoch ms, 0 if missing. */
+function archTimeMs(s) {
+  const d = s.archivedAt;
+  if (!d) return 0;
+  if (typeof d.seconds === 'number') return d.seconds * 1000;
+  const ms = new Date(d).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+
+/** Fetch (or reuse) the entire archive, newest first. No orderBy on the query on purpose:
+ *  Firestore silently drops docs that lack the ordered field, and a search must not miss any. */
+async function archEnsureFullData() {
+  if (archFullCacheFresh()) return _archFullCache.ships;
+  if (_archFullLoadPromise) return _archFullLoadPromise;
+  _archFullLoadPromise = (async () => {
+    const snap  = await db.collection('sonick_archive').get();
+    const ships = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => archTimeMs(b) - archTimeMs(a));
+    backfillMissingOrderTypes('sonick_archive', ships);
+    // Free accurate reseed of the archive counter, same as Show All does.
+    window._archTotalCount = ships.length;
+    archCounterDocRef().set({ archivedCount: ships.length }, { merge: true }).catch(() => {});
+    _archFullCache = { ships, loadedAt: Date.now() };
+    return ships;
+  })();
+  try { return await _archFullLoadPromise; }
+  finally { _archFullLoadPromise = null; }
+}
+
+/** Debounced target: load the whole archive, then re-run the filters against it. */
+async function archLoadFullThenFilter() {
+  if (window._archMode === 'all' || !db || !archSearchActive()) { _archSearchLoading = false; return; }
+  try {
+    await archEnsureFullData();
+  } catch (e) {
+    _archSearchLoading = false;
+    toast(t('error') + e.message, 'error');
+    applyArchFilters();          // fall back to searching the loaded page only
+    renderArchTable();
+    return;
+  }
+  _archSearchLoading = false;
+  filterArchive();               // re-evaluate now that the full copy is available
+}
+
+/** Phone matching that ignores spaces/dashes/brackets/'+': stored numbers look like
+ *  "+961 71 234 567", so a plain substring test misses "71234567". A typed leading 0
+ *  (e.g. "03 123 456") also matches a stored number saved without it. */
+function archPhoneMatches(stored, typed) {
+  stored = String(stored || '');
+  const q = String(typed || '').trim();
+  if (!q) return true;
+  const qDigits = q.replace(/\D/g, '');
+  if (!qDigits) return stored.includes(q);
+  const sDigits = stored.replace(/\D/g, '');
+  if (sDigits.includes(qDigits)) return true;
+  return qDigits.length > 1 && qDigits.startsWith('0') && sDigits.includes(qDigits.slice(1));
+}
+
 async function refreshArchiveData() {
+  archInvalidateFullCache();     // the archive just changed — a cached whole-archive copy is stale
   window._archMode              = 'paged';
   window._archPageCache         = {};
   window._archPageStartCursors  = {};
@@ -1767,6 +1861,7 @@ async function refreshArchiveData() {
   window._archLastKnownPage     = null;
   await archFetchTotalCount();
   await archLoadFirestorePage(1);
+  if (archSearchActive()) filterArchive(); // keep an active search spanning the (reloaded) whole archive
 }
 
 /** Builds the Archive table's <thead> row — same rule as Shipments: "our profit" follows
@@ -1918,6 +2013,9 @@ async function renderArchive() {
   window._archCurrentPage      = 1;
   window._archTotalCount       = null;
   window._archLastKnownPage    = null;
+  window._archSearchPage       = 1;
+  _archSearchLoading           = false;
+  clearTimeout(_archSearchTimer);
   let ships = [];
   try {
     if (db) {
@@ -2059,7 +2157,8 @@ function archivedDateStr(s) {
  *  controls — pure filtering, no page reset and no render (see filterArchive()/
  *  archLoadFirestorePage() for the two different ways this gets triggered). In 'paged' mode
  *  window._allArchShips is just the single currently-loaded Firestore page, so filtering
- *  narrows within that page only; in 'all' mode it's the entire archive. */
+ *  narrows within that page only — EXCEPT while a search box has text, when the whole archive
+ *  (see archEnsureFullData()) is filtered instead; in 'all' mode it's the entire archive. */
 function applyArchFilters() {
   const searchRaw   = (document.getElementById('arch-search')?.value || '').trim();
   const searchNums  = searchRaw.includes(',')
@@ -2078,7 +2177,11 @@ function applyArchFilters() {
 
   updateArchStatusFilterLabel(statuses);
 
-  window._filteredArchShips = (window._allArchShips || []).filter(s => {
+  // While a search is active and the whole archive is loaded, filter THAT (every order ever
+  // archived) instead of just the one Firestore page currently on screen.
+  const baseShips = archUseFullSet() ? _archFullCache.ships : (window._allArchShips || []);
+
+  window._filteredArchShips = baseShips.filter(s => {
     if (searchNums) {
       if (!searchNums.includes(String(s.shipNumber).trim())) return false;
     } else if (search && !(
@@ -2088,7 +2191,7 @@ function applyArchFilters() {
       (s.driverName       || '').toLowerCase().includes(search) ||
       (s.customerAddress  || '').toLowerCase().includes(search)
     )) return false;
-    if (phoneSearch && !(s.customerPhone || '').includes(phoneSearch)) return false;
+    if (phoneSearch && !archPhoneMatches(s.customerPhone, phoneSearch)) return false;
     if (statuses.length && !statuses.includes(s.status)) return false;
     if (company     && s.companyName    !== company)     return false;
     if (driver      && s.driverName     !== driver)      return false;
@@ -2105,12 +2208,22 @@ function applyArchFilters() {
 }
 
 /** Applies the filter controls, then renders. Called on every filter/search input change.
- *  In 'all' mode (admin pressed Show All) a filter change also jumps back to display page 1.
- *  In 'paged' mode the current Firestore page stays put — filtering narrows within it live,
- *  rather than jumping to a different server page just because the search box changed. */
+ *  - Search box(es) empty: 'paged' mode narrows the current Firestore page live (no jump to a
+ *    different server page); 'all' mode jumps back to display page 1.
+ *  - Search box(es) with text: the whole archive is loaded once (debounced) and searched. Until
+ *    it arrives the on-screen page is filtered instantly, with a "searching entire archive"
+ *    note; results then switch to the full set automatically. */
 function filterArchive() {
+  clearTimeout(_archSearchTimer);
+  const searching = window._archMode !== 'all' && !!db && archSearchActive();
+  if (searching && !archFullCacheFresh()) {
+    _archSearchLoading = true;
+    _archSearchTimer = setTimeout(archLoadFullThenFilter, 350);
+  } else if (!searching) {
+    _archSearchLoading = false;
+  }
   applyArchFilters();
-  if (window._archMode === 'all') window._archCurrentPage = 1;
+  if (archInMemoryMode()) window[archMemPageKey()] = 1;
   renderArchTable();
 }
 
@@ -2145,10 +2258,12 @@ function renderArchTable() {
   const anyEntityFilterSelected = !!(company || driver || contractor);
 
   let totalPages, pageShips;
-  if (window._archMode === 'all') {
+  if (archInMemoryMode()) {
+    // Show All mode, or a whole-archive search: slice the filtered set into pages in memory.
+    const memKey = archMemPageKey();
     totalPages = Math.max(1, Math.ceil(ships.length / ARCH_PAGE_SIZE));
-    window._archCurrentPage = Math.min(Math.max(1, window._archCurrentPage || 1), totalPages);
-    const pageStart = (window._archCurrentPage - 1) * ARCH_PAGE_SIZE;
+    window[memKey] = Math.min(Math.max(1, window[memKey] || 1), totalPages);
+    const pageStart = (window[memKey] - 1) * ARCH_PAGE_SIZE;
     pageShips = ships.slice(pageStart, pageStart + ARCH_PAGE_SIZE);
   } else {
     // totalPages here is only ever used for the page LABEL, never to decide whether Next can
@@ -2238,22 +2353,32 @@ function renderArchTable() {
 function renderArchPaginationBar(totalPages) {
   const bar = document.getElementById('arch-pagination');
   if (!bar) return;
-  const page = window._archCurrentPage || 1;
+  const inMemory = archInMemoryMode();
+  const page = inMemory ? (window[archMemPageKey()] || 1) : (window._archCurrentPage || 1);
   const showAllControl = can('canManageUsers')
     ? (window._archMode === 'all'
         ? `<button class="btn btn-secondary btn-sm" onclick="exitArchShowAllMode()" style="margin-inline-start:12px;">↩️ ${t('backToPagedBtn')}</button>`
         : `<button class="btn btn-secondary btn-sm" id="arch-show-all-btn" onclick="showAllArchive()" style="margin-inline-start:12px;">📋 ${t('showAllBtn')}</button>`)
     : '';
-  const isLastPage = window._archMode === 'all'
+  const isLastPage = inMemory
     ? page >= totalPages
     : (window._archLastKnownPage != null && page >= window._archLastKnownPage);
   const pageLabel = totalPages != null
     ? t('pageOfLabel').replace('{page}', page).replace('{total}', totalPages)
     : t('pageLabel').replace('{page}', page);
+  // Whole-archive search status: spinner while loading, then a note showing the search really
+  // spans every archived order (not just the page that was on screen).
+  let searchNote = '';
+  if (_archSearchLoading) {
+    searchNote = `<span style="font-size:12px;color:var(--brand-light);">⏳ ${esc(t('archSearchingAll'))}</span>`;
+  } else if (archUseFullSet()) {
+    searchNote = `<span style="font-size:12px;color:var(--brand-light);">🔎 ${esc(t('archSearchAllNote').replace('{n}', _archFullCache.ships.length))}</span>`;
+  }
   bar.innerHTML = `
     <button class="btn btn-secondary btn-sm" ${page <= 1 ? 'disabled' : ''} onclick="goToArchPage(${page - 1})">▶ ${t('prevPageBtn')}</button>
     <span style="font-size:12px;color:var(--text-3);">${pageLabel}</span>
     <button class="btn btn-secondary btn-sm" ${isLastPage ? 'disabled' : ''} onclick="goToArchPage(${page + 1})">◀ ${t('nextPageBtn')}</button>
+    ${searchNote}
     ${showAllControl}
   `;
 }
@@ -2261,12 +2386,13 @@ function renderArchPaginationBar(totalPages) {
 /** Move to another page. In 'all' mode this just re-slices the already-fully-loaded set
  *  (no Firestore call). In 'paged' mode it always fetches that page directly from Firestore
  *  (or reuses the cache if it was already visited this session) — this is exactly the "next
- *  100 orders" jump, independent of whether Show All has ever been used. */
+ *  100 orders" jump, independent of whether Show All has ever been used. While a
+ *  whole-archive search is showing, pages are slices of the search results (also in memory). */
 async function goToArchPage(page) {
   if (page < 1) return;
-  if (window._archMode === 'all') {
+  if (archInMemoryMode()) {
     const totalPages = Math.max(1, Math.ceil((window._filteredArchShips || []).length / ARCH_PAGE_SIZE));
-    window._archCurrentPage = Math.min(Math.max(1, page), totalPages);
+    window[archMemPageKey()] = Math.min(Math.max(1, page), totalPages);
     renderArchTable();
     return;
   }
@@ -2438,7 +2564,8 @@ async function deleteSelectedArchived() {
 }
 
 async function viewShipmentArchive(id) {
-  let s = (window._allArchShips || []).find(x => x.id === id);
+  let s = (window._allArchShips || []).find(x => x.id === id)
+       || (window._filteredArchShips || []).find(x => x.id === id);  // whole-archive search results
   if (!s && db) {
     try { const doc = await db.collection('sonick_archive').doc(id).get(); if (doc.exists) s = { id, ...doc.data() }; } catch (e) {}
   }
@@ -4345,6 +4472,7 @@ function confirmRestoreBackup() {
 }
 
 async function performRestore(data, mode) {
+  archInvalidateFullCache(); // a restore can rewrite sonick_archive wholesale
   const restoreBtn = document.getElementById('backup-restore-btn');
   if (restoreBtn) { restoreBtn.disabled = true; restoreBtn.textContent = t('restoringData'); }
   try {
