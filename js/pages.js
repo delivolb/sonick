@@ -2612,119 +2612,971 @@ function paymentTypeLabel(type) {
   return cfg ? t(cfg.key) : (type || t('paymentTypePayment'));
 }
 
+// ---------------------------------------------------------------------------
+//  DEBTS & PAYMENTS PAGE
+//  Built to stay fast as the ledger grows:
+//   • Period chips (today / 7d / 30d / this month / last month / this year / all /
+//     custom) drive a date-RANGE Firestore query, so only that window is ever read.
+//   • Picking a single party switches to its full statement instead: one equality query
+//     on entityId (all-time), shown oldest→newest with a running balance and an opening
+//     balance carried in from before the chosen period.
+//   • Party type / direction / type / text search are applied client-side on what's loaded,
+//     so changing them is instant and costs no reads.
+//   • Two views: Transactions (grouped by day, with each day's net) and Balances by party
+//     (who has received/paid what in the period — click a row to open their statement).
+// ---------------------------------------------------------------------------
+const DEBT_PERIODS = [
+  { id: 'today',     key: 'debtPeriodToday'     },
+  { id: '7d',        key: 'debtPeriod7d'        },
+  { id: '30d',       key: 'debtPeriod30d'       },
+  { id: 'month',     key: 'debtPeriodMonth'     },
+  { id: 'lastMonth', key: 'debtPeriodLastMonth' },
+  { id: 'year',      key: 'debtPeriodYear'      },
+  { id: 'all',       key: 'debtPeriodAll'       },
+  { id: 'custom',    key: 'debtPeriodCustom'    },
+];
+const DEBT_PAGE_STEP = 50;     // rows rendered per "Show more"
+const DEBT_ALL_LIMIT = 1000;   // safety cap for the unbounded "All time" query
+
+function freshDebtState() {
+  return { period: '30d', from: '', to: '', partyType: '', partyId: '', direction: '', type: '', search: '', view: 'list', shown: DEBT_PAGE_STEP };
+}
+let _debtState   = freshDebtState();
+let _debtCache   = { key: null, rows: [], capped: false };
+let _debtLoadSeq = 0;
+
+/** Local-time YYYY-MM-DD (today() is UTC-based, which is a day off around midnight here). */
+function debtYMD(d) {
+  const z = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
+}
+function debtParseYMD(s) {
+  const [y, m, d] = String(s || '').split('-').map(Number);
+  return (y && m && d) ? new Date(y, m - 1, d) : null;
+}
+
+/** { from, to } (YYYY-MM-DD, '' = open-ended) for a period id. */
+function debtPeriodRange(period = _debtState.period) {
+  const now = new Date();
+  const td  = debtYMD(now);
+  const back = days => { const d = new Date(now); d.setDate(d.getDate() - days); return debtYMD(d); };
+  switch (period) {
+    case 'today':     return { from: td, to: td };
+    case '7d':        return { from: back(6),  to: td };
+    case '30d':       return { from: back(29), to: td };
+    case 'month':     return { from: debtYMD(new Date(now.getFullYear(), now.getMonth(), 1)), to: td };
+    case 'lastMonth': return { from: debtYMD(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
+                               to:   debtYMD(new Date(now.getFullYear(), now.getMonth(), 0)) };
+    case 'year':      return { from: debtYMD(new Date(now.getFullYear(), 0, 1)), to: td };
+    case 'custom': {
+      let { from, to } = _debtState;
+      if (from && to && from > to) [from, to] = [to, from];
+      return { from: from || '', to: to || '' };
+    }
+    default:          return { from: '', to: '' };
+  }
+}
+
+function debtPeriodLabel() {
+  const p = DEBT_PERIODS.find(x => x.id === _debtState.period);
+  if (_debtState.period === 'custom') {
+    const { from, to } = debtPeriodRange();
+    return `${from ? fmtDate(from) : '…'} → ${to ? fmtDate(to) : '…'}`;
+  }
+  return p ? t(p.key) : '';
+}
+
+function debtQueryKey() {
+  if (_debtState.partyId) return 'party:' + _debtState.partyId;
+  const { from, to } = debtPeriodRange();
+  return `range:${from}|${to}`;
+}
+
+const debtIsIn   = f => Number(f.direction) > 0;
+const debtAmount = f => Math.round((Number(f.amount) || 0) * 100) / 100;
+const debtMoney  = n => '$' + formatNum(Math.round(Math.abs(n) * 100) / 100);
+const debtSigned = n => (n > 0 ? '+' : n < 0 ? '−' : '') + debtMoney(n);
+function debtCreatedMs(f) {
+  const c = f.createdAt;
+  if (!c) return 0;
+  if (typeof c.toMillis === 'function') return c.toMillis();
+  if (c.seconds) return c.seconds * 1000;
+  const ms = new Date(c).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+function debtTypeLabel(type) {
+  return PAYMENT_ENTITY_TYPES[type] ? t(PAYMENT_ENTITY_TYPES[type].prefixKey) : '';
+}
+
+/** Reads the rows for the current query scope (period range, or one party all-time). */
+async function debtFetchRows() {
+  const key = debtQueryKey();
+  let rows = [], capped = false;
+  if (!db) return { key, rows: (typeof getDemoPayments === 'function' ? getDemoPayments() : []), capped };
+  const col = db.collection('sonick_payments');
+  let snap;
+  if (_debtState.partyId) {
+    snap = await col.where('entityId', '==', _debtState.partyId).get();
+  } else {
+    const { from, to } = debtPeriodRange();
+    let q = col;
+    if (from) q = q.where('date', '>=', from);
+    if (to)   q = q.where('date', '<=', to);
+    q = q.orderBy('date', 'desc');
+    if (!from && !to) q = q.limit(DEBT_ALL_LIMIT);
+    snap = await q.get();
+    capped = !from && !to && snap.size >= DEBT_ALL_LIMIT;
+  }
+  rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return { key, rows, capped };
+}
+
+function debtAnnotate(rows) {
+  rows.forEach(f => { f._ptype = resolvePaymentEntityType(f) || (PAYMENT_ENTITY_TYPES[f.entityType] ? f.entityType : null); });
+  return rows;
+}
+
+/** Load (or reuse) rows for the current scope, ignoring results from superseded requests. */
+async function debtLoad(force) {
+  const key = debtQueryKey();
+  if (!force && _debtCache.key === key) return true;
+  const seq = ++_debtLoadSeq;
+  try {
+    const res = await debtFetchRows();
+    if (seq !== _debtLoadSeq) return false;
+    _debtCache = { key: res.key, rows: debtAnnotate(res.rows), capped: res.capped };
+  } catch (e) {
+    if (seq !== _debtLoadSeq) return false;
+    _debtCache = { key, rows: [], capped: false };
+    toast(t('error') + e.message, 'error');
+  }
+  window._debtFlows = _debtCache.rows;   // used by the edit modal to find a record
+  return true;
+}
+
+/** Rows after client-side filters. withPeriod=false skips the date window (used for the
+ *  statement's opening balance, which needs everything BEFORE the window). */
+function debtFilteredRows(withPeriod = true) {
+  const s = _debtState;
+  const { from, to } = debtPeriodRange();
+  const q = s.search.trim().toLowerCase();
+  return _debtCache.rows.filter(f => {
+    if (withPeriod && s.partyId) {
+      if (from && (f.date || '') < from) return false;
+      if (to   && (f.date || '') > to)   return false;
+    }
+    if (s.partyType && !s.partyId && f._ptype !== s.partyType) return false;
+    if (s.direction === 'in'  && !debtIsIn(f)) return false;
+    if (s.direction === 'out' &&  debtIsIn(f)) return false;
+    if (s.type && (f.type || 'Payment') !== s.type) return false;
+    if (q && !(
+      (f.entityName || '').toLowerCase().includes(q) ||
+      (f.notes || '').toLowerCase().includes(q) ||
+      String(f.amount ?? '').includes(q)
+    )) return false;
+    return true;
+  });
+}
+
+function debtTotals(rows) {
+  let tin = 0, tout = 0;
+  rows.forEach(f => { if (debtIsIn(f)) tin += debtAmount(f); else tout += debtAmount(f); });
+  return { tin, tout, net: tin - tout };
+}
+
+// ===== PAGE =====
 async function renderDebts() {
   if (!can('canViewDebts')) { renderAccessDenied(); return; }
   const content = document.getElementById('page-content');
-  let flows = [];
-  try {
-    if (db) {
-      const snap = await db.collection('sonick_payments').orderBy('date', 'desc').limit(300).get();
-      flows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    }
-  } catch (e) { flows = getDemoPayments(); }
-
-  let totalIn = 0, totalOut = 0;
-  flows.forEach(f => { if (f.direction > 0) totalIn += f.amount; else totalOut += f.amount; });
-  const balance = totalIn - totalOut;
-
+  await loadPersonsCache();
+  const actions = [
+    can('canExport')      ? `<button class="btn btn-secondary btn-sm" onclick="exportDebtsExcel()">${ICONS.excelFile} ${t('exportExcelBtn')}</button>` : '',
+    can('canViewFinance') ? `<button class="btn btn-primary btn-sm" onclick="openPaymentModal()">${t('recordPayment')}</button>` : '',
+  ].join('');
   content.innerHTML = `
-  ${pageHeader(t('debtsPayments'), [t('finance')], can('canViewFinance') ? `<button class="btn btn-primary btn-sm" onclick="openPaymentModal()">${t('recordPayment')}</button>` : '')}
-  <div class="stats-grid" style="margin-bottom:24px;">
-    <div class="stat-card green"><div class="stat-icon green">${ICONS.inbox}</div><div class="stat-label">${t('totalReceived')}</div><div class="stat-value mono">$${formatNum(totalIn)}</div></div>
-    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.send}</div><div class="stat-label">${t('totalPaidOut')}</div><div class="stat-value mono">$${formatNum(totalOut)}</div></div>
-    <div class="stat-card ${balance >= 0 ? 'green' : 'brand'}"><div class="stat-icon ${balance >= 0 ? 'green' : 'brand'}">${balance >= 0 ? ICONS.checkCircle : ICONS.alertTriangle}</div><div class="stat-label">${t('balance')}</div><div class="stat-value mono">$${formatNum(Math.abs(balance))}</div></div>
-  </div>
-  <div class="table-container">
-    <div class="table-header">
-      <span class="card-title">${esc(t('paymentRecordsTitle'))}</span>
-    </div>
-    <div class="table-scroll">
-      <table>
-        <thead><tr>
-          <th>${t('date')}</th><th>${t('entity')}</th><th>${t('typeCol')}</th>
-          <th>${t('amountUSDCol')}</th><th>${t('directionCol')}</th><th>${t('paymentNote')}</th>
-          ${can('canDeleteShipments') ? '<th></th>' : ''}
-        </tr></thead>
-        <tbody>
-          ${flows.map(f => `
-          <tr>
-            <td style="color:var(--text-3);font-size:12px;">${fmtDate(f.date)}</td>
-            <td><strong>${esc(f.entityName || '—')}</strong></td>
-            <td><span class="badge badge-gray">${esc(paymentTypeLabel(f.type))}</span></td>
-            <td class="font-mono" style="color:${f.direction > 0 ? 'var(--green)' : 'var(--red)'};">$${formatNum(f.amount || 0)}</td>
-            <td>${f.direction > 0 ? `<span class="badge badge-green">${t('dirIn')}</span>` : `<span class="badge badge-red">${t('dirOut')}</span>`}</td>
-            <td style="color:var(--text-3);font-size:12px;">${esc(f.notes || '')}</td>
-            ${can('canDeleteShipments') ? `<td><button class="btn btn-danger btn-sm btn-icon" onclick="deletePayment('${f.id}')">🗑</button></td>` : ''}
-          </tr>`).join('') || `<tr><td colspan="7" class="table-empty"><div class="empty-icon">💰</div><p>${esc(t('noPaymentsRecorded'))}</p></td></tr>`}
-        </tbody>
-      </table>
+  ${pageHeader(t('debtsPayments'), [t('finance')], actions)}
+  <div id="debt-toolbar"></div>
+  <div id="debt-body" class="debt-body"><div class="table-empty"><p>${esc(t('debtLoading'))}</p></div></div>`;
+  renderDebtToolbar();
+  await debtLoad(true);
+  renderDebtBody();
+}
+
+async function debtRefresh() {
+  _debtState.shown = DEBT_PAGE_STEP;
+  const body = document.getElementById('debt-body');
+  if (body) body.classList.add('is-loading');
+  const current = await debtLoad(false);
+  if (!current) return;
+  if (body) body.classList.remove('is-loading');
+  renderDebtBody();
+}
+
+// ===== TOOLBAR =====
+function debtPartyOptionsHTML() {
+  const s = _debtState;
+  const opt = (e) => `<option value="${esc(e.id)}" ${e.id === s.partyId ? 'selected' : ''}>${esc(e.name || '—')}</option>`;
+  let html = `<option value="">${esc(t('debtAllParties'))}</option>`;
+  if (s.partyType) return html + paymentEntityList(s.partyType).map(opt).join('');
+  Object.keys(PAYMENT_ENTITY_TYPES).forEach(type => {
+    const list = paymentEntityList(type);
+    if (list.length) html += `<optgroup label="${esc(debtTypeLabel(type))}">${list.map(opt).join('')}</optgroup>`;
+  });
+  return html;
+}
+
+function renderDebtToolbar() {
+  const el = document.getElementById('debt-toolbar');
+  if (!el) return;
+  const s = _debtState;
+  const sel = (v, cur) => v === cur ? 'selected' : '';
+  const chips = DEBT_PERIODS.map(p =>
+    `<button type="button" class="debt-chip ${s.period === p.id ? 'active' : ''}" onclick="setDebtPeriod('${p.id}')">${esc(t(p.key))}</button>`).join('');
+  const typeOpts = Object.keys(PAYMENT_TYPE_CONFIG).map(k => `<option value="${k}" ${sel(k, s.type)}>${esc(t(PAYMENT_TYPE_CONFIG[k].key))}</option>`).join('');
+  const ptypeOpts = Object.keys(PAYMENT_ENTITY_TYPES).map(k => `<option value="${k}" ${sel(k, s.partyType)}>${esc(debtTypeLabel(k))}</option>`).join('');
+  const hasFilters = s.partyType || s.partyId || s.direction || s.type || s.search || s.period !== '30d';
+  el.innerHTML = `
+  <div class="debt-toolbar">
+    <div class="debt-periods">${chips}</div>
+    ${s.period === 'custom' ? `
+    <div class="debt-range">
+      <input type="date" class="filter-date" value="${esc(s.from)}" onchange="setDebtCustom('from', this.value)">
+      <span>→</span>
+      <input type="date" class="filter-date" value="${esc(s.to)}" onchange="setDebtCustom('to', this.value)">
+    </div>` : ''}
+    <div class="filter-bar">
+      <select class="filter-select" onchange="setDebtPartyType(this.value)">
+        <option value="">${esc(t('debtAllPartyTypes'))}</option>${ptypeOpts}
+      </select>
+      <select class="filter-select debt-party-select" onchange="setDebtParty(this.value)">${debtPartyOptionsHTML()}</select>
+      <select class="filter-select" onchange="setDebtFilter('direction', this.value)">
+        <option value="">${esc(t('debtAllDirections'))}</option>
+        <option value="in"  ${sel('in',  s.direction)}>${esc(t('dirIn'))}</option>
+        <option value="out" ${sel('out', s.direction)}>${esc(t('dirOut'))}</option>
+      </select>
+      <select class="filter-select" onchange="setDebtFilter('type', this.value)">
+        <option value="">${esc(t('debtAllTypes'))}</option>${typeOpts}
+      </select>
+      <div class="table-search">
+        <span class="search-icon">🔍</span>
+        <input type="text" value="${esc(s.search)}" placeholder="${esc(t('debtSearchPlaceholder'))}" oninput="onDebtSearch(this.value)">
+      </div>
+      ${hasFilters ? `<button type="button" class="btn btn-ghost btn-sm" onclick="resetDebtFilters()">↺ ${esc(t('debtResetFilters'))}</button>` : ''}
     </div>
   </div>`;
 }
 
-function openPaymentModal() {
-  const comps = companies_cache.map(c => `<option value="${c.id}">[${esc(t('companiesEntityPrefix'))}] ${esc(c.name)}</option>`).join('');
-  const drvs  = drivers_cache.map(d  => `<option value="${d.id}">[${esc(t('driversEntityPrefix'))}] ${esc(d.name)}</option>`).join('');
-  const ctrs  = contractors_cache.map(c => `<option value="${c.id}">[${esc(t('contractorsEntityPrefix'))}] ${esc(c.name)}</option>`).join('');
-  const typeOptions = Object.keys(PAYMENT_TYPE_CONFIG).map(k => `<option value="${k}">${esc(t(PAYMENT_TYPE_CONFIG[k].key))}</option>`).join('');
-  document.getElementById('modal-payment-title').textContent      = t('recordPaymentTitle');
-  document.getElementById('modal-payment-cancel-btn').textContent = t('cancel');
-  document.getElementById('modal-payment-save-btn').textContent   = t('recordPaymentTitle');
-  document.getElementById('modal-payment-body').innerHTML = `
-  <div class="form-group">
-    <label class="form-label">${t('entity')}</label>
-    <select id="p-entity" class="form-select" onchange="setEntityName()">
-      <option value="">${esc(t('selectPlaceholderDash'))}</option>${comps}${drvs}${ctrs}
-    </select>
+function setDebtPeriod(p) {
+  const s = _debtState;
+  s.period = p;
+  if (p === 'custom' && !s.from && !s.to) {
+    const r = debtPeriodRange('30d');
+    s.from = r.from; s.to = r.to;
+  }
+  renderDebtToolbar();
+  debtRefresh();
+}
+function setDebtCustom(which, val) { _debtState[which] = val || ''; debtRefresh(); }
+function setDebtPartyType(v) {
+  const s = _debtState;
+  s.partyType = v;
+  if (s.partyId && v && !paymentEntityList(v).some(e => e.id === s.partyId)) s.partyId = '';
+  renderDebtToolbar();
+  debtRefresh();
+}
+function setDebtParty(id) {
+  _debtState.partyId = id || '';
+  if (id) _debtState.view = 'list';
+  renderDebtToolbar();
+  debtRefresh();
+}
+function openDebtParty(id) {
+  if (!id) return;
+  setDebtParty(id);
+  document.getElementById('debt-toolbar')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function clearDebtParty() { setDebtParty(''); }
+function setDebtFilter(field, val) {
+  _debtState[field] = val;
+  _debtState.shown = DEBT_PAGE_STEP;
+  renderDebtToolbar();
+  renderDebtBody();
+}
+function onDebtSearch(val) {
+  const hadFilters = !!_debtState.search;
+  _debtState.search = val;
+  _debtState.shown = DEBT_PAGE_STEP;
+  renderDebtBody();
+  // Only re-render the toolbar (to show/hide Reset) when that actually changes — re-rendering
+  // on every keystroke would steal focus from the search box.
+  if (hadFilters !== !!val) {
+    renderDebtToolbar();
+    const input = document.querySelector('#debt-toolbar .table-search input');
+    if (input) { input.focus(); input.setSelectionRange(val.length, val.length); }
+  }
+}
+function setDebtView(v) { _debtState.view = v; _debtState.shown = DEBT_PAGE_STEP; renderDebtBody(); }
+function debtShowMore() { _debtState.shown += DEBT_PAGE_STEP; renderDebtBody(); }
+function resetDebtFilters() {
+  _debtState = freshDebtState();
+  renderDebtToolbar();
+  debtRefresh();
+}
+
+// ===== BODY =====
+function renderDebtBody() {
+  const body = document.getElementById('debt-body');
+  if (!body) return;
+  const s = _debtState;
+  const rows = debtFilteredRows();
+  const { tin, tout, net } = debtTotals(rows);
+  const party = s.partyId ? debtPartyInfo(s.partyId) : null;
+  const inCount = rows.filter(debtIsIn).length;
+
+  let tableHTML;
+  if (party) tableHTML = debtStatementHTML(rows);
+  else if (s.view === 'parties') tableHTML = debtBalancesHTML(rows);
+  else tableHTML = debtTransactionsHTML(rows);
+
+  body.innerHTML = `
+  ${party ? debtPartyBannerHTML(party) : ''}
+  <div class="stats-grid">
+    <div class="stat-card green"><div class="stat-icon green">${ICONS.inbox}</div><div class="stat-label">${t('totalReceived')}</div><div class="stat-value mono">${debtMoney(tin)}</div><div class="stat-trend">${inCount} ${esc(t('debtTxWord'))}</div></div>
+    <div class="stat-card brand"><div class="stat-icon brand">${ICONS.send}</div><div class="stat-label">${t('totalPaidOut')}</div><div class="stat-value mono">${debtMoney(tout)}</div><div class="stat-trend">${rows.length - inCount} ${esc(t('debtTxWord'))}</div></div>
+    <div class="stat-card ${net >= 0 ? 'green' : 'amber'}"><div class="stat-icon ${net >= 0 ? 'green' : 'amber'}">${net >= 0 ? ICONS.checkCircle : ICONS.alertTriangle}</div><div class="stat-label">${t('debtNetPeriod')}</div><div class="stat-value mono ${net > 0 ? 'debt-amt-in' : net < 0 ? 'debt-amt-out' : ''}">${debtSigned(net)}</div><div class="stat-trend">${esc(debtPeriodLabel())}</div></div>
+    <div class="stat-card blue"><div class="stat-icon blue">${ICONS.wallet}</div><div class="stat-label">${t('debtTxCount')}</div><div class="stat-value mono">${formatNum(rows.length)}</div><div class="stat-trend">${rows.length ? esc(t('debtAvgTx').replace('{v}', debtMoney((tin + tout) / rows.length))) : '—'}</div></div>
   </div>
-  <input type="hidden" id="p-entity-name">
-  <div class="form-row">
-    <div class="form-group"><label class="form-label">${t('amountUSDCol')}</label><input type="number" step="0.01" id="p-amount" class="form-input" placeholder="0.00"></div>
-    <div class="form-group"><label class="form-label">${t('directionCol')}</label>
+  ${rows.length ? debtFlowChartHTML(rows) : ''}
+  <div class="table-container">
+    <div class="table-header">
+      ${party
+        ? `<span class="card-title">${esc(t('debtPartyStatement'))} — ${esc(party.name)}</span>`
+        : `<div class="debt-tabs">
+            <button type="button" class="debt-tab ${s.view === 'list' ? 'active' : ''}" onclick="setDebtView('list')">${esc(t('debtViewTransactions'))}</button>
+            <button type="button" class="debt-tab ${s.view === 'parties' ? 'active' : ''}" onclick="setDebtView('parties')">${esc(t('debtViewParties'))}</button>
+          </div>`}
+      <span class="debt-note">${esc(debtPeriodLabel())}</span>
+    </div>
+    ${tableHTML}
+  </div>
+  ${_debtCache.capped ? `<div class="debt-note" style="margin-top:10px;">⚠️ ${esc(t('debtLimitNote').replace('{n}', DEBT_ALL_LIMIT))}</div>` : ''}`;
+}
+
+function debtEmptyHTML() {
+  return `<div class="table-empty"><div class="empty-icon">💰</div><p>${esc(_debtCache.rows.length ? t('debtNoResults') : t('noPaymentsRecorded'))}</p></div>`;
+}
+
+function debtActionsCell(f) {
+  const canEditPay = canEditPayments();
+  const canDelPay  = can('canDeleteShipments');
+  if (!canEditPay && !canDelPay) return '';
+  return `<td style="white-space:nowrap;">
+    ${canEditPay ? `<button class="btn btn-ghost btn-sm btn-icon" onclick="openPaymentModal('${f.id}')" title="${esc(t('editPaymentTitle'))}">✏️</button>` : ''}
+    ${canDelPay  ? `<button class="btn btn-danger btn-sm btn-icon" onclick="deletePayment('${f.id}')">🗑</button>` : ''}
+  </td>`;
+}
+const debtHasActions = () => canEditPayments() || can('canDeleteShipments');
+
+function debtPartyCell(f, clickable = true) {
+  const typeLbl = debtTypeLabel(f._ptype);
+  const name = esc(f.entityName || '—');
+  return `<td>
+    ${clickable && f.entityId ? `<a class="debt-party-link" onclick="openDebtParty('${esc(f.entityId)}')">${name}</a>` : `<strong>${name}</strong>`}
+    ${typeLbl ? `<span class="debt-party-type">· ${esc(typeLbl)}</span>` : ''}
+  </td>`;
+}
+
+function debtDayLabel(ymd) {
+  const td = debtYMD(new Date());
+  const y  = new Date(); y.setDate(y.getDate() - 1);
+  if (ymd === td) return t('debtPeriodToday');
+  if (ymd === debtYMD(y)) return t('debtYesterday');
+  const d = debtParseYMD(ymd);
+  if (!d) return ymd || '—';
+  const weekday = d.toLocaleDateString(currentLang === 'ar' ? 'ar' : 'en-GB', { weekday: 'long' });
+  return `${weekday} · ${fmtDate(ymd)}`;
+}
+
+/** Transactions view: newest first, grouped under a header per day with that day's net. */
+function debtTransactionsHTML(rows) {
+  if (!rows.length) return debtEmptyHTML();
+  const s = _debtState;
+  const sorted = [...rows].sort((a, b) => (b.date || '').localeCompare(a.date || '') || debtCreatedMs(b) - debtCreatedMs(a));
+  const dayNet = {};
+  sorted.forEach(f => { dayNet[f.date || ''] = (dayNet[f.date || ''] || 0) + (debtIsIn(f) ? 1 : -1) * debtAmount(f); });
+  const cols = 5 + (debtHasActions() ? 1 : 0);
+  const shown = sorted.slice(0, s.shown);
+  let lastDay = null, html = '';
+  shown.forEach(f => {
+    const day = f.date || '';
+    if (day !== lastDay) {
+      lastDay = day;
+      const n = dayNet[day];
+      html += `<tr class="debt-day-row"><td colspan="${cols}"><div class="debt-day-head">
+        <span>${esc(debtDayLabel(day))}</span>
+        <span class="${n > 0 ? 'debt-amt-in' : n < 0 ? 'debt-amt-out' : ''}">${esc(t('debtNet'))} ${debtSigned(n)}</span>
+      </div></td></tr>`;
+    }
+    const isIn = debtIsIn(f);
+    html += `<tr>
+      ${debtPartyCell(f)}
+      <td><span class="badge badge-gray">${esc(paymentTypeLabel(f.type))}</span></td>
+      <td class="font-mono ${isIn ? 'debt-amt-in' : 'debt-amt-out'}" style="font-weight:700;">${debtSigned(isIn ? debtAmount(f) : -debtAmount(f))}</td>
+      <td>${isIn ? `<span class="badge badge-green">${t('dirIn')}</span>` : `<span class="badge badge-red">${t('dirOut')}</span>`}</td>
+      <td class="debt-notes">${esc(f.notes || '')}</td>
+      ${debtActionsCell(f)}
+    </tr>`;
+  });
+  return `
+  <div class="table-scroll"><table>
+    <thead><tr>
+      <th>${t('entity')}</th><th>${t('typeCol')}</th><th>${t('amountUSDCol')}</th><th>${t('directionCol')}</th><th>${t('paymentNote')}</th>
+      ${debtHasActions() ? '<th></th>' : ''}
+    </tr></thead>
+    <tbody>${html}</tbody>
+  </table></div>
+  ${debtMoreFooterHTML(shown.length, sorted.length)}`;
+}
+
+function debtMoreFooterHTML(shown, total) {
+  if (total <= DEBT_PAGE_STEP && shown >= total) return '';
+  return `<div class="table-footer debt-more">
+    <span>${esc(t('debtShowingOf').replace('{shown}', shown).replace('{total}', total))}</span>
+    ${shown < total ? `<button type="button" class="btn btn-secondary btn-sm" onclick="debtShowMore()">${esc(t('debtShowMore').replace('{n}', total - shown))}</button>` : ''}
+  </div>`;
+}
+
+/** Balances view: one row per party for the period, biggest net first. */
+function debtBalancesHTML(rows) {
+  if (!rows.length) return debtEmptyHTML();
+  const s = _debtState;
+  const groups = new Map();
+  rows.forEach(f => {
+    const key = f.entityId || ('name:' + (f.entityName || ''));
+    let g = groups.get(key);
+    if (!g) { g = { id: f.entityId || '', name: f.entityName || '—', type: f._ptype, count: 0, tin: 0, tout: 0, last: '' }; groups.set(key, g); }
+    g.count++;
+    if (debtIsIn(f)) g.tin += debtAmount(f); else g.tout += debtAmount(f);
+    if ((f.date || '') > g.last) g.last = f.date || '';
+  });
+  const list = [...groups.values()].map(g => ({ ...g, net: g.tin - g.tout }))
+    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net) || b.count - a.count);
+  const shown = list.slice(0, s.shown);
+  const tot = debtTotals(rows);
+  return `
+  <div class="table-scroll"><table>
+    <thead><tr>
+      <th>${t('entity')}</th><th>${t('debtTxCount')}</th><th>${t('totalReceived')}</th><th>${t('totalPaidOut')}</th><th>${t('debtNet')}</th><th>${t('debtLastTx')}</th>
+    </tr></thead>
+    <tbody>
+      ${shown.map(g => `
+      <tr class="${g.id ? 'debt-party-row' : ''}" ${g.id ? `onclick="openDebtParty('${esc(g.id)}')" title="${esc(t('debtPartyStatement'))}"` : ''}>
+        <td><strong>${esc(g.name)}</strong>${debtTypeLabel(g.type) ? `<span class="debt-party-type">· ${esc(debtTypeLabel(g.type))}</span>` : ''}</td>
+        <td class="font-mono">${g.count}</td>
+        <td class="font-mono debt-amt-in">${debtMoney(g.tin)}</td>
+        <td class="font-mono debt-amt-out">${debtMoney(g.tout)}</td>
+        <td class="font-mono ${g.net > 0 ? 'debt-amt-in' : g.net < 0 ? 'debt-amt-out' : ''}" style="font-weight:700;">${debtSigned(g.net)}</td>
+        <td style="color:var(--text-3);font-size:12px;">${fmtDate(g.last)}</td>
+      </tr>`).join('')}
+      <tr class="debt-total-row">
+        <td>${esc(t('debtTotal'))} (${list.length})</td>
+        <td class="font-mono">${rows.length}</td>
+        <td class="font-mono debt-amt-in">${debtMoney(tot.tin)}</td>
+        <td class="font-mono debt-amt-out">${debtMoney(tot.tout)}</td>
+        <td class="font-mono ${tot.net > 0 ? 'debt-amt-in' : tot.net < 0 ? 'debt-amt-out' : ''}">${debtSigned(tot.net)}</td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table></div>
+  ${debtMoreFooterHTML(shown.length, list.length)}`;
+}
+
+/** Party statement: oldest → newest with running balance, opening balance carried in. */
+function debtStatementRows(rows) {
+  const { from } = debtPeriodRange();
+  const opening = from
+    ? debtFilteredRows(false).filter(f => (f.date || '') < from)
+        .reduce((sum, f) => sum + (debtIsIn(f) ? 1 : -1) * debtAmount(f), 0)
+    : 0;
+  const sorted = [...rows].sort((a, b) => (a.date || '').localeCompare(b.date || '') || debtCreatedMs(a) - debtCreatedMs(b));
+  let running = opening;
+  const lines = sorted.map(f => {
+    running += (debtIsIn(f) ? 1 : -1) * debtAmount(f);
+    return { f, balance: running };
+  });
+  return { opening, lines, closing: running, hasOpening: !!from };
+}
+
+function debtStatementHTML(rows) {
+  const { opening, lines, closing, hasOpening } = debtStatementRows(rows);
+  if (!lines.length && !opening) return debtEmptyHTML();
+  const bal = n => `<td class="font-mono ${n > 0 ? 'debt-amt-in' : n < 0 ? 'debt-amt-out' : ''}" style="font-weight:700;">${debtSigned(n)}</td>`;
+  const tot = debtTotals(rows);
+  const actions = debtHasActions();
+  return `
+  <div class="table-scroll"><table>
+    <thead><tr>
+      <th>${t('date')}</th><th>${t('typeCol')}</th><th>${t('dirIn')}</th><th>${t('dirOut')}</th><th>${t('debtRunningBalance')}</th><th>${t('paymentNote')}</th>
+      ${actions ? '<th></th>' : ''}
+    </tr></thead>
+    <tbody>
+      ${hasOpening ? `<tr class="debt-day-row"><td colspan="4">${esc(t('debtOpeningBalance'))}</td>${bal(opening)}<td colspan="${actions ? 2 : 1}"></td></tr>` : ''}
+      ${lines.map(({ f, balance }) => {
+        const isIn = debtIsIn(f);
+        return `<tr>
+          <td style="color:var(--text-3);font-size:12px;white-space:nowrap;">${fmtDate(f.date)}</td>
+          <td><span class="badge badge-gray">${esc(paymentTypeLabel(f.type))}</span></td>
+          <td class="font-mono debt-amt-in">${isIn ? debtMoney(debtAmount(f)) : ''}</td>
+          <td class="font-mono debt-amt-out">${!isIn ? debtMoney(debtAmount(f)) : ''}</td>
+          ${bal(balance)}
+          <td class="debt-notes">${esc(f.notes || '')}</td>
+          ${debtActionsCell(f)}
+        </tr>`;
+      }).join('')}
+      <tr class="debt-total-row">
+        <td colspan="2">${esc(t('debtClosingBalance'))}</td>
+        <td class="font-mono debt-amt-in">${debtMoney(tot.tin)}</td>
+        <td class="font-mono debt-amt-out">${debtMoney(tot.tout)}</td>
+        ${bal(closing)}
+        <td colspan="${actions ? 2 : 1}"></td>
+      </tr>
+    </tbody>
+  </table></div>`;
+}
+
+function debtPartyInfo(id) {
+  const type = resolvePaymentEntityType({ entityId: id });
+  const e = type ? paymentEntityList(type).find(x => x.id === id) : null;
+  const fromRow = _debtCache.rows.find(f => f.entityId === id);
+  return { id, type: type || fromRow?._ptype || null, name: e?.name || fromRow?.entityName || '—', phone: e?.phone || '' };
+}
+
+function debtPartyBannerHTML(party) {
+  const all = debtTotals(_debtCache.rows);   // party mode loads the party's full history
+  return `
+  <div class="debt-party-banner">
+    <div class="debt-party-id">
+      <div class="debt-party-avatar">${esc((party.name || '?').trim().charAt(0).toUpperCase())}</div>
+      <div>
+        <div class="debt-party-name">${esc(party.name)}</div>
+        <div class="debt-party-meta">${esc(debtTypeLabel(party.type))}${party.phone ? ` · <span dir="ltr">${esc(party.phone)}</span>` : ''}</div>
+      </div>
+    </div>
+    <div class="debt-party-figures">
+      <div><span>${esc(t('totalReceived'))}</span><strong class="debt-amt-in">${debtMoney(all.tin)}</strong></div>
+      <div><span>${esc(t('totalPaidOut'))}</span><strong class="debt-amt-out">${debtMoney(all.tout)}</strong></div>
+      <div><span>${esc(t('debtAllTimeBalance'))}</span><strong class="${all.net > 0 ? 'debt-amt-in' : all.net < 0 ? 'debt-amt-out' : ''}">${debtSigned(all.net)}</strong></div>
+    </div>
+    <div class="debt-party-actions">
+      ${can('canViewFinance') ? `<button type="button" class="btn btn-primary btn-sm" onclick="openPaymentModal()">${esc(t('recordPayment'))}</button>` : ''}
+      <button type="button" class="btn btn-secondary btn-sm" onclick="clearDebtParty()">✕ ${esc(t('debtAllParties'))}</button>
+    </div>
+  </div>`;
+}
+
+/** Compact in/out bar chart: daily buckets for short windows, monthly for long ones. */
+function debtFlowChartHTML(rows) {
+  let { from, to } = debtPeriodRange();
+  const dates = rows.map(f => f.date).filter(Boolean).sort();
+  if (!dates.length) return '';
+  if (!from) from = dates[0];
+  if (!to) to = dates[dates.length - 1];
+  const start = debtParseYMD(from), end = debtParseYMD(to);
+  if (!start || !end || end < start) return '';
+  const days = Math.round((end - start) / 86400000) + 1;
+  const monthly = days > 45;
+
+  const keys = [];
+  if (monthly) {
+    const d = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (d <= end) { keys.push(debtYMD(d).slice(0, 7)); d.setMonth(d.getMonth() + 1); }
+  } else {
+    const d = new Date(start);
+    while (d <= end) { keys.push(debtYMD(d)); d.setDate(d.getDate() + 1); }
+  }
+  const useKeys = keys.slice(-24 * (monthly ? 1 : 3));
+  const buckets = new Map(useKeys.map(k => [k, { tin: 0, tout: 0 }]));
+  rows.forEach(f => {
+    if (!f.date) return;
+    const b = buckets.get(monthly ? f.date.slice(0, 7) : f.date);
+    if (!b) return;
+    if (debtIsIn(f)) b.tin += debtAmount(f); else b.tout += debtAmount(f);
+  });
+  const max = Math.max(0, ...[...buckets.values()].flatMap(b => [b.tin, b.tout]));
+  if (!max) return '';
+
+  const locale = currentLang === 'ar' ? 'ar' : 'en-GB';
+  const label = k => monthly
+    ? new Date(+k.slice(0, 4), +k.slice(5, 7) - 1, 1).toLocaleDateString(locale, { month: 'short', year: 'numeric' })
+    : debtParseYMD(k).toLocaleDateString(locale, { day: '2-digit', month: 'short' });
+  const pct = v => v ? Math.max(3, (v / max) * 100) : 0;
+  const cols = useKeys.map(k => {
+    const b = buckets.get(k);
+    return `<div class="debt-flow-col" title="${esc(label(k))} — ${esc(t('dirIn'))}: ${debtMoney(b.tin)} · ${esc(t('dirOut'))}: ${debtMoney(b.tout)}">
+      <div class="debt-flow-bar in"  style="height:${pct(b.tin)}%"></div>
+      <div class="debt-flow-bar out" style="height:${pct(b.tout)}%"></div>
+    </div>`;
+  }).join('');
+  const mid = useKeys[Math.floor((useKeys.length - 1) / 2)];
+  return `
+  <div class="card debt-flow-card">
+    <div class="card-header">
+      <span class="card-title">${esc(t('debtFlowTitle'))}</span>
+      <span class="debt-legend"><i class="in"></i>${esc(t('dirIn'))}<i class="out"></i>${esc(t('dirOut'))}</span>
+    </div>
+    <div class="card-body">
+      <div class="debt-flow">${cols}</div>
+      <div class="debt-flow-axis"><span>${esc(label(useKeys[0]))}</span>${useKeys.length > 2 ? `<span>${esc(label(mid))}</span>` : ''}<span>${esc(label(useKeys[useKeys.length - 1]))}</span></div>
+    </div>
+  </div>`;
+}
+
+// ===== EXCEL EXPORT (exactly what's on screen: current filters + current view) =====
+async function exportDebtsExcel() {
+  if (typeof ExcelJS === 'undefined') { toast(t('error') + 'ExcelJS', 'error'); return; }
+  const s = _debtState;
+  const rows = debtFilteredRows();
+  if (!rows.length) { toast(t('debtNoResults'), 'info'); return; }
+  const isRTL = document.documentElement.dir === 'rtl';
+  const party = s.partyId ? debtPartyInfo(s.partyId) : null;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Sonick Delivery System'; wb.created = new Date();
+  const ws = wb.addWorksheet('Payments', { views: [{ rightToLeft: isRTL }] });
+  const money = '"$"#,##0.00';
+
+  let header, data, numCols, widths;
+  if (party) {
+    const st = debtStatementRows(rows);
+    header = [t('date'), t('typeCol'), t('dirIn'), t('dirOut'), t('debtRunningBalance'), t('paymentNote')];
+    data = [];
+    if (st.hasOpening) data.push([t('debtOpeningBalance'), '', null, null, st.opening, '']);
+    st.lines.forEach(({ f, balance }) => data.push([
+      f.date || '', paymentTypeLabel(f.type),
+      debtIsIn(f) ? debtAmount(f) : null, debtIsIn(f) ? null : debtAmount(f), balance, f.notes || '']));
+    const tot = debtTotals(rows);
+    data.push([t('debtClosingBalance'), '', tot.tin, tot.tout, st.closing, '']);
+    numCols = [3, 4, 5]; widths = [14, 14, 14, 14, 16, 40];
+  } else if (s.view === 'parties') {
+    const groups = new Map();
+    rows.forEach(f => {
+      const key = f.entityId || ('name:' + (f.entityName || ''));
+      let g = groups.get(key);
+      if (!g) { g = { name: f.entityName || '—', type: f._ptype, count: 0, tin: 0, tout: 0, last: '' }; groups.set(key, g); }
+      g.count++; if (debtIsIn(f)) g.tin += debtAmount(f); else g.tout += debtAmount(f);
+      if ((f.date || '') > g.last) g.last = f.date || '';
+    });
+    header = [t('entity'), t('typeCol'), t('debtTxCount'), t('totalReceived'), t('totalPaidOut'), t('debtNet'), t('debtLastTx')];
+    data = [...groups.values()].sort((a, b) => Math.abs(b.tin - b.tout) - Math.abs(a.tin - a.tout))
+      .map(g => [g.name, debtTypeLabel(g.type), g.count, g.tin, g.tout, g.tin - g.tout, g.last]);
+    const tot = debtTotals(rows);
+    data.push([t('debtTotal'), '', rows.length, tot.tin, tot.tout, tot.net, '']);
+    numCols = [4, 5, 6]; widths = [28, 16, 10, 16, 16, 16, 16];
+  } else {
+    header = [t('date'), t('entity'), t('typeCol'), t('dirIn'), t('dirOut'), t('paymentNote')];
+    data = [...rows].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      .map(f => [f.date || '', `${f.entityName || '—'}${debtTypeLabel(f._ptype) ? ' · ' + debtTypeLabel(f._ptype) : ''}`,
+        paymentTypeLabel(f.type), debtIsIn(f) ? debtAmount(f) : null, debtIsIn(f) ? null : debtAmount(f), f.notes || '']);
+    const tot = debtTotals(rows);
+    data.push([t('debtTotal'), '', '', tot.tin, tot.tout, `${t('debtNet')}: ${debtSigned(tot.net)}`]);
+    numCols = [4, 5]; widths = [14, 32, 14, 14, 14, 40];
+  }
+
+  const C = { brand: 'FF4F6EF5', pale: 'FFF1F2F6', ink: 'FF1F2937' };
+  ws.mergeCells(1, 1, 1, header.length);
+  const title = ws.getCell(1, 1);
+  title.value = `${t('debtsPayments')}${party ? ' — ' + party.name : ''}`;
+  title.font = { size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
+  title.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.brand } };
+  title.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 28;
+  ws.mergeCells(2, 1, 2, header.length);
+  const sub = ws.getCell(2, 1);
+  sub.value = `${debtPeriodLabel()}  •  ${rows.length} ${t('debtTxWord')}`;
+  sub.font = { italic: true, size: 10, color: { argb: 'FF6B7280' } };
+  sub.alignment = { horizontal: 'center' };
+
+  const hr = ws.getRow(4);
+  header.forEach((h, i) => {
+    const c = hr.getCell(i + 1);
+    c.value = h;
+    c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.ink } };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+  });
+  hr.height = 20;
+  data.forEach((vals, ri) => {
+    const row = ws.getRow(5 + ri);
+    vals.forEach((v, ci) => { row.getCell(ci + 1).value = v; });
+    numCols.forEach(ci => { row.getCell(ci).numFmt = money; });
+    if (ri === data.length - 1) row.eachCell(c => { c.font = { bold: true }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: C.pale } }; });
+  });
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sonick-payments${party ? '-' + (party.name || '').replace(/[\\/:*?"<>|]+/g, '').trim() : ''}-${debtYMD(new Date())}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast(t('excelExported'), 'success');
+}
+
+/** The four kinds of party a payment can belong to. Companies/drivers/contractors come from
+ *  the app's existing caches; 'person' is an outside person (e.g. an external customer) kept
+ *  in its own sonick_persons collection and addable right from the payment modal. */
+const PAYMENT_ENTITY_TYPES = {
+  company:    { prefixKey: 'companiesEntityPrefix'   },
+  driver:     { prefixKey: 'driversEntityPrefix'     },
+  contractor: { prefixKey: 'contractorsEntityPrefix' },
+  person:     { prefixKey: 'personsEntityPrefix'     },
+};
+let persons_cache = [];
+
+async function loadPersonsCache() {
+  if (!db) return;
+  try {
+    const snap = await db.collection('sonick_persons').orderBy('name').get();
+    persons_cache = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch (e) { console.warn('Persons load failed:', e.message); }
+}
+
+function paymentEntityList(type) {
+  if (type === 'company')    return companies_cache;
+  if (type === 'driver')     return drivers_cache;
+  if (type === 'contractor') return contractors_cache;
+  return persons_cache;
+}
+
+function paymentEntityOptionsHTML(type, selectedId) {
+  const placeholder = `<option value="">${esc(t('selectPlaceholderDash'))}</option>`;
+  return placeholder + paymentEntityList(type)
+    .map(e => `<option value="${esc(e.id)}" ${e.id === selectedId ? 'selected' : ''}>${esc(e.name || '—')}</option>`).join('');
+}
+
+function paymentEntitySelectHTML(type) {
+  return `<select id="p-ent-${type}" class="form-select" onchange="onPaymentEntityPick('${type}')">${paymentEntityOptionsHTML(type)}</select>`;
+}
+
+/** Editing a payment is an update in Firestore, which firestore.rules allows for admin and
+ *  manager only — so the edit button is shown to exactly those roles. */
+function canEditPayments() {
+  return ['admin', 'manager'].includes(currentUserData?.role);
+}
+
+let _editingPaymentId  = null;   // null = recording a new payment
+let _editingPaymentOrig = null;  // the record as loaded, for legacy/unresolved party fallback
+
+/** Which party type an id belongs to — uses the stored entityType when present, otherwise
+ *  (payments recorded before the split selects) looks the id up in each list. */
+function resolvePaymentEntityType(f) {
+  if (PAYMENT_ENTITY_TYPES[f.entityType] && paymentEntityList(f.entityType).some(e => e.id === f.entityId)) return f.entityType;
+  return Object.keys(PAYMENT_ENTITY_TYPES).find(k => paymentEntityList(k).some(e => e.id === f.entityId)) || null;
+}
+
+async function openPaymentModal(editId) {
+  const editing = editId ? (window._debtFlows || []).find(f => f.id === editId) : null;
+  if (editId && !editing) { toast(t('paymentNotFound'), 'error'); return; }
+  _editingPaymentId   = editing ? editing.id : null;
+  _editingPaymentOrig = editing || null;
+  await loadPersonsCache();
+  const typeOptions = Object.keys(PAYMENT_TYPE_CONFIG).map(k => `<option value="${k}">${esc(t(PAYMENT_TYPE_CONFIG[k].key))}</option>`).join('');
+  document.getElementById('modal-payment-title').textContent      = editing ? t('editPaymentTitle') : t('recordPaymentTitle');
+  document.getElementById('modal-payment-cancel-btn').textContent = t('cancel');
+  document.getElementById('modal-payment-save-btn').textContent   = editing ? t('savePaymentChangesBtn') : t('recordPaymentTitle');
+  // Compact layout so the whole form fits on screen: party labels sit beside their selects,
+  // and amount / direction / type share one row.
+  const bodyEl = document.getElementById('modal-payment-body');
+  bodyEl.style.padding = '16px 24px';
+  const entRow = (label, control) => `
+  <div style="display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:center;margin-bottom:10px;">
+    <label class="form-label" style="margin-bottom:0;">${label}</label>${control}
+  </div>`;
+  bodyEl.innerHTML = `
+  ${entRow(t('companiesEntityPrefix'),   paymentEntitySelectHTML('company'))}
+  ${entRow(t('driversEntityPrefix'),     paymentEntitySelectHTML('driver'))}
+  ${entRow(t('contractorsEntityPrefix'), paymentEntitySelectHTML('contractor'))}
+  ${entRow(t('personsEntityPrefix'), `
+    <div style="display:flex;gap:8px;align-items:center;min-width:0;">
+      <div style="flex:1;min-width:0;">${paymentEntitySelectHTML('person')}</div>
+      <button type="button" class="btn btn-secondary btn-sm" id="p-add-person-btn" onclick="togglePaymentNewPerson(true)" style="white-space:nowrap;">${esc(t('addPersonBtn'))}</button>
+    </div>`)}
+  <div class="form-group" style="margin-bottom:0;">
+    <div id="p-new-person" class="hidden" style="margin-top:10px;padding:12px;border:1px dashed var(--border-2);border-radius:10px;">
+      <div class="form-group"><label class="form-label">${t('newPersonNameLabel')}</label><input type="text" id="p-np-name" class="form-input" onkeydown="if(event.key==='Enter'){event.preventDefault();savePaymentNewPerson();}"></div>
+      <div class="form-group"><label class="form-label">${t('newPersonPhoneLabel')}</label>${phoneFieldHTML('p-np-phone', '')}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="togglePaymentNewPerson(false)">${esc(t('cancel'))}</button>
+        <button type="button" class="btn btn-primary btn-sm" id="p-np-save" onclick="savePaymentNewPerson()">${esc(t('savePersonBtn'))}</button>
+      </div>
+    </div>
+  </div>
+  <div style="border-top:1px solid var(--border);margin:14px 0 12px;"></div>
+  <div class="form-row" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
+    <div class="form-group" style="margin-bottom:12px;"><label class="form-label">${t('amountUSDCol')}</label><input type="number" step="0.01" id="p-amount" class="form-input" placeholder="0.00"></div>
+    <div class="form-group" style="margin-bottom:12px;"><label class="form-label">${t('directionCol')}</label>
       <select id="p-direction" class="form-select">
         <option value="1">${esc(t('directionIncoming'))}</option>
         <option value="-1">${esc(t('directionOutgoing'))}</option>
       </select>
     </div>
-  </div>
-  <div class="form-group"><label class="form-label">${t('typeCol')}</label>
-    <select id="p-type" class="form-select">
-      ${typeOptions}
-    </select>
+    <div class="form-group" style="margin-bottom:12px;"><label class="form-label">${t('typeCol')}</label>
+      <select id="p-type" class="form-select">
+        ${typeOptions}
+      </select>
+    </div>
   </div>
   <div class="form-row">
-    <div class="form-group"><label class="form-label">${t('date')}</label><input type="date" id="p-date" class="form-input" value="${today()}"></div>
-    <div class="form-group"><label class="form-label">${t('paymentNote')}</label><input type="text" id="p-notes" class="form-input" placeholder="${esc(t('optionalNotePlaceholder'))}"></div>
+    <div class="form-group" style="margin-bottom:0;"><label class="form-label">${t('date')}</label><input type="date" id="p-date" class="form-input" value="${today()}"></div>
+    <div class="form-group" style="margin-bottom:0;"><label class="form-label">${t('paymentNote')}</label><input type="text" id="p-notes" class="form-input" placeholder="${esc(t('optionalNotePlaceholder'))}"></div>
   </div>`;
+  if (editing) prefillPaymentForm(editing);
+  else if (typeof _debtState !== 'undefined' && _debtState.partyId) {
+    // Opened while viewing a party's statement → start with that party already chosen.
+    const type = resolvePaymentEntityType({ entityId: _debtState.partyId });
+    const sel = type && document.getElementById(`p-ent-${type}`);
+    if (sel) sel.value = _debtState.partyId;
+  }
   openModal('modal-payment');
 }
 
-function setEntityName() {
-  const sel = document.getElementById('p-entity');
-  const opt = sel.options[sel.selectedIndex];
-  document.getElementById('p-entity-name').value = opt.text.replace(/^\[.*?\] /, '');
+function prefillPaymentForm(f) {
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  // Party: select it in its own list. If the party no longer exists (deleted company, etc.),
+  // keep it as an extra option so saving without touching the party keeps it unchanged.
+  const type = resolvePaymentEntityType(f);
+  if (type) {
+    setVal(`p-ent-${type}`, f.entityId);
+  } else if (f.entityId) {
+    const sel = document.getElementById(`p-ent-${PAYMENT_ENTITY_TYPES[f.entityType] ? f.entityType : 'person'}`);
+    if (sel) {
+      const opt = document.createElement('option');
+      opt.value = f.entityId; opt.textContent = f.entityName || '—'; opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+  setVal('p-amount', f.amount ?? '');
+  setVal('p-direction', f.direction > 0 ? '1' : '-1');
+  const typeSel = document.getElementById('p-type');
+  if (typeSel && f.type) {
+    if (![...typeSel.options].some(o => o.value === f.type)) {
+      const opt = document.createElement('option');
+      opt.value = f.type; opt.textContent = paymentTypeLabel(f.type);
+      typeSel.appendChild(opt);
+    }
+    typeSel.value = f.type;
+  }
+  setVal('p-date', f.date || today());
+  setVal('p-notes', f.notes || '');
+}
+
+/** A payment belongs to exactly one party: picking in one select clears the other three. */
+function onPaymentEntityPick(type) {
+  const picked = document.getElementById(`p-ent-${type}`)?.value;
+  if (!picked) return;
+  Object.keys(PAYMENT_ENTITY_TYPES).forEach(k => {
+    if (k === type) return;
+    const el = document.getElementById(`p-ent-${k}`);
+    if (el) el.value = '';
+  });
+}
+
+/** Returns { entityType, entityId, entityName } for whichever select has a value, or null. */
+function getPickedPaymentEntity() {
+  for (const type of Object.keys(PAYMENT_ENTITY_TYPES)) {
+    const id = document.getElementById(`p-ent-${type}`)?.value;
+    if (id) {
+      const e = paymentEntityList(type).find(x => x.id === id);
+      if (!e && _editingPaymentOrig && id === _editingPaymentOrig.entityId) {
+        // Unresolved party kept from the record being edited — leave its stored details as-is.
+        return { entityType: _editingPaymentOrig.entityType || null, entityId: id, entityName: _editingPaymentOrig.entityName || '' };
+      }
+      return { entityType: type, entityId: id, entityName: e?.name || '' };
+    }
+  }
+  return null;
+}
+
+function togglePaymentNewPerson(show) {
+  document.getElementById('p-new-person')?.classList.toggle('hidden', !show);
+  const addBtn = document.getElementById('p-add-person-btn');
+  if (addBtn) addBtn.disabled = !!show;
+  if (show) {
+    const nameEl = document.getElementById('p-np-name');
+    if (nameEl) { nameEl.value = ''; nameEl.focus(); }
+    clearPhoneField('p-np-phone');
+  }
+}
+
+function selectPaymentPerson(id) {
+  const sel = document.getElementById('p-ent-person');
+  if (sel) sel.innerHTML = paymentEntityOptionsHTML('person', id);
+  onPaymentEntityPick('person');
+  togglePaymentNewPerson(false);
+}
+
+async function savePaymentNewPerson() {
+  const name  = (document.getElementById('p-np-name')?.value || '').trim().replace(/\s+/g, ' ');
+  const phone = getPhoneFieldValue('p-np-phone');
+  if (!name) { toast(t('personNameRequired'), 'error'); return; }
+
+  const existing = persons_cache.find(p => (p.name || '').trim().toLowerCase() === name.toLowerCase());
+  if (existing) { selectPaymentPerson(existing.id); toast(t('personAlreadyExists'), 'info'); return; }
+
+  const btn = document.getElementById('p-np-save');
+  if (btn) btn.disabled = true;
+  try {
+    const payload = {
+      name, phone,
+      createdAt: (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString(),
+      createdBy: currentUserData?.id || null
+    };
+    let id = 'local-' + Date.now();
+    if (db) id = (await db.collection('sonick_persons').add(payload)).id;
+    persons_cache.push({ id, name, phone });
+    persons_cache.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    selectPaymentPerson(id);
+    toast(t('personAdded'), 'success');
+  } catch (e) { toast(t('error') + e.message, 'error'); }
+  finally { if (btn) btn.disabled = false; }
 }
 
 async function savePayment() {
-  const entityId   = document.getElementById('p-entity')?.value;
-  const entityName = document.getElementById('p-entity-name')?.value;
+  const picked     = getPickedPaymentEntity();
   const amount     = parseFloat(document.getElementById('p-amount')?.value) || 0;
   const direction  = parseInt(document.getElementById('p-direction')?.value) || 1;
   const type       = document.getElementById('p-type')?.value  || 'Payment';
   const date       = document.getElementById('p-date')?.value  || today();
   const notes      = document.getElementById('p-notes')?.value || '';
-  if (!entityId || !amount) { toast(t('entityRequired'), 'error'); return; }
+  if (!picked || !amount) { toast(t('entityRequired'), 'error'); return; }
+  const { entityType, entityId, entityName } = picked;
+  const nowStamp = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
+  const saveBtn = document.getElementById('modal-payment-save-btn');
+  if (saveBtn) saveBtn.disabled = true;
   try {
-    const payload = {
-      entityId, entityName, amount, direction, type, date, notes,
-      createdAt: (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString(),
-      createdBy: currentUserData?.id
-    };
-    if (db) await db.collection('sonick_payments').add(payload);
-    toast(t('paymentRecorded'), 'success');
+    if (_editingPaymentId) {
+      const updates = {
+        entityType, entityId, entityName, amount, direction, type, date, notes,
+        updatedAt: nowStamp,
+        updatedBy: currentUserData?.id || null
+      };
+      if (db) await db.collection('sonick_payments').doc(_editingPaymentId).update(updates);
+      toast(t('paymentUpdated'), 'success');
+    } else {
+      const payload = {
+        entityType, entityId, entityName, amount, direction, type, date, notes,
+        createdAt: nowStamp,
+        createdBy: currentUserData?.id
+      };
+      if (db) await db.collection('sonick_payments').add(payload);
+      toast(t('paymentRecorded'), 'success');
+    }
+    _editingPaymentId = null; _editingPaymentOrig = null;
     closeModal('modal-payment');
     renderDebts();
   } catch (e) { toast(t('error') + e.message, 'error'); }
+  finally { if (saveBtn) saveBtn.disabled = false; }
 }
 
 async function deletePayment(id) {
@@ -4318,7 +5170,7 @@ async function sendPasswordReset() {
 const BACKUP_COLLECTIONS = [
   'sonick_shipments', 'sonick_archive', 'sonick_companies', 'sonick_drivers',
   'sonick_billtypes', 'sonick_payments', 'sonick_users', 'sonick_settings',
-  'sonick_export_reports'
+  'sonick_export_reports', 'sonick_persons'
 ];
 const BACKUP_LAST_KEY = 'sonick_last_backup_at';
 let _pendingRestoreFile = null;
