@@ -8,7 +8,7 @@
    stays live.
    =================================================== */
 
-const CACHE_NAME = 'sonick-user-shell-v1';
+const CACHE_NAME = 'sonick-user-shell-v2';
 
 // Static shell files only — no data, no Firebase SDK URLs.
 const SHELL_FILES = [

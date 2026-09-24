@@ -353,7 +353,7 @@ function renderArchPaginationBar() {
         : `<button class="btn btn-secondary btn-sm" onclick="showAllUserArchive()">📋 ${t('showAllBtn')}</button>`)
     : '';
 
-  if (_archMode === 'all') {
+  if (_archMode === 'all' || archFullSearchActive()) {
     bar.innerHTML = showAllControl;
     return;
   }
@@ -380,6 +380,7 @@ async function initArchivePaging() {
   _archPageStartCursors = {};
   _archCurrentPage      = 1;
   _archLastKnownPage    = null;
+  resetArchiveSearch();
   await archFetchTotalCount();
   await archLoadPage(1);
 }
@@ -421,6 +422,131 @@ function unsubscribeAll() {
   _archLastKnownPage    = null;
   _archTotalCount       = null;
   allArchive = [];
+  resetArchiveSearch();
+}
+
+// ===== ARCHIVE WHOLE-COLLECTION SEARCH =====
+// In paged mode only one page (ARCH_PAGE_SIZE orders) is in memory, so a plain client-side
+// filter can only find orders on the page you're looking at. When the Archive search box has
+// text, this ALSO asks Firestore directly for exact order-number and phone matches across the
+// entire sonick_archive collection, then merges those hits with the current page's matches.
+// Cost: one small indexed query per search (debounced), never a full collection read.
+// Firestore has no substring search, so name/address/partial matches still only cover the
+// current page — full order #s and full phone numbers are what find anything, anywhere.
+const ARCH_SEARCH_DEBOUNCE_MS = 400;
+const ARCH_SEARCH_MAX_VALUES  = 150; // cap for long comma lists (5 'in' queries of 30)
+let _archSearchSeq    = 0;
+let _archSearchTimer  = null;
+let _archSearchTerm   = '';    // term the current hits belong to (or are being fetched for)
+let _archSearchHits   = [];    // docs returned by Firestore for _archSearchTerm
+let _archSearchHitIds = new Set();
+let _archSearchBusy   = false;
+
+function archSearchRaw() { return (document.getElementById('user-search')?.value || '').trim(); }
+
+/** Whole-archive search only applies on the Archive tab in paged mode — Show All already has
+ *  every archived order in memory, so the normal client-side filter covers everything there. */
+function archFullSearchActive() {
+  return activeTab === 'archive' && _archMode === 'paged' && !!archSearchRaw();
+}
+
+function resetArchiveSearch() {
+  _archSearchSeq++;                 // invalidate any in-flight query
+  if (_archSearchTimer) { clearTimeout(_archSearchTimer); _archSearchTimer = null; }
+  _archSearchTerm   = '';
+  _archSearchHits   = [];
+  _archSearchHitIds = new Set();
+  _archSearchBusy   = false;
+}
+
+/** Group national digits the way people type them: "70676454" → "70 676 454". */
+function groupPhoneDigits(n) {
+  return n.length >= 7 ? n.replace(/^(\d+?)(\d{3})(\d{3})$/, '$1 $2 $3') : n;
+}
+
+/** Every stored format a phone might plausibly have, for an exact Firestore 'in' match.
+ *  Saved values look like "+961 70676454" (phone widget), "+961 70 676 454", or legacy /
+ *  imported raw strings like "70676454" / "03 123 456". Returns [] if it isn't phone-like. */
+function phoneSearchVariants(raw) {
+  const trimmed = raw.trim();
+  const digits  = trimmed.replace(/\D/g, '');
+  if (digits.length < 6) return [];
+  let dial = '961', nat = digits;
+  if (trimmed.startsWith('+') || digits.startsWith('00')) {
+    const p = parsePhoneValue('+' + digits.replace(/^00/, ''));
+    dial = p.dial; nat = p.national;
+  } else if (digits.startsWith('961') && digits.length >= 10) {
+    nat = digits.slice(3);
+  }
+  if (!nat) return [];
+  const nats = new Set([nat]);
+  if (nat.startsWith('0')) nats.add(nat.slice(1));
+  else if (dial === '961' && nat.length === 7) nats.add('0' + nat);   // "3123456" ↔ "03123456"
+  const out = new Set([trimmed]);
+  for (const n of nats) {
+    const g = groupPhoneDigits(n);
+    [`+${dial} ${n}`, `+${dial}${n}`, `${dial}${n}`, n, `+${dial} ${g}`, g].forEach(v => out.add(v));
+  }
+  return [...out].slice(0, 30);   // Firestore 'in' limit
+}
+
+/** Order numbers are saved as strings, but some legacy docs hold numbers — query both. */
+function shipNumberSearchValues(raw) {
+  const tokens = (raw.includes(',') ? raw.split(',') : [raw])
+    .map(v => v.trim().replace(/^#/, '')).filter(Boolean);
+  const seen = new Set(), out = [];
+  for (const tok of tokens) {
+    const vals = [tok];
+    if (/^\d+$/.test(tok) && Number.isSafeInteger(Number(tok))) vals.push(Number(tok));
+    for (const v of vals) {
+      const key = typeof v + ':' + v;
+      if (!seen.has(key)) { seen.add(key); out.push(v); }
+    }
+  }
+  return out.slice(0, ARCH_SEARCH_MAX_VALUES);
+}
+
+function scheduleArchiveSearch(term) {
+  resetArchiveSearch();
+  _archSearchTerm = term;
+  _archSearchBusy = true;
+  const seq = _archSearchSeq;
+  _archSearchTimer = setTimeout(() => runArchiveSearch(term, seq), ARCH_SEARCH_DEBOUNCE_MS);
+}
+
+async function runArchiveSearch(term, seq) {
+  _archSearchTimer = null;
+  if (!db) { _archSearchBusy = false; return; }
+  try {
+    const col      = db.collection('sonick_archive');
+    const shipVals = shipNumberSearchValues(term);
+    const phoneVals = term.includes(',') ? [] : phoneSearchVariants(term);
+    const jobs = [];
+    for (let i = 0; i < shipVals.length; i += 30) jobs.push(col.where('shipNumber', 'in', shipVals.slice(i, i + 30)).get());
+    if (phoneVals.length) jobs.push(col.where('customerPhone', 'in', phoneVals).get());
+    const snaps = await Promise.all(jobs);
+    if (seq !== _archSearchSeq) return;   // user kept typing / cleared / switched mode
+    const byId = new Map();
+    snaps.forEach(snap => snap.docs.forEach(d => byId.set(d.id, { id: d.id, ...d.data() })));
+    _archSearchHits   = normalizeOrderType([...byId.values()]);
+    _archSearchHitIds = new Set(_archSearchHits.map(s => s.id));
+  } catch (e) {
+    if (seq !== _archSearchSeq) return;
+    _archSearchHits = []; _archSearchHitIds = new Set();
+    toast(t('archSearchFailed'), 'error');
+    console.warn('Archive search failed:', e.message);
+  }
+  _archSearchBusy = false;
+  applyUserFilters();
+}
+
+function archivedMillis(s) {
+  const d = s.archivedAt;
+  if (!d) return 0;
+  if (typeof d.toMillis === 'function') return d.toMillis();
+  if (d.seconds) return d.seconds * 1000;
+  const ms = new Date(d).getTime();
+  return isNaN(ms) ? 0 : ms;
 }
 
 // ===== TABS =====
@@ -428,7 +554,7 @@ function switchUserTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.user-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
   const searchEl = document.getElementById('user-search');
-  if (searchEl) searchEl.placeholder = tab === 'orders' ? t('searchShipments') : t('searchArchive');
+  if (searchEl) searchEl.placeholder = tab === 'orders' ? t('searchShipments') : t('userSearchArchive');
   applyUserFilters();
   renderArchPaginationBar();
 }
@@ -566,22 +692,37 @@ function updateFiltersDot() {
 // ===== APPLY FILTERS + RENDER =====
 function applyUserFilters() {
   const f          = currentFilter();
-  const source     = activeTab === 'orders' ? allOrders : allArchive;
-  const searchRaw  = (document.getElementById('user-search')?.value || '').trim();
+  const searchRaw  = archSearchRaw();
+  const fullSearch = archFullSearchActive();
+
+  // Whole-archive search bookkeeping: (re)query when the term changes, drop hits when cleared.
+  if (fullSearch && searchRaw !== _archSearchTerm) scheduleArchiveSearch(searchRaw);
+  else if (!searchRaw && _archSearchTerm) resetArchiveSearch();
+
+  let source = activeTab === 'orders' ? allOrders : allArchive;
+  if (fullSearch && _archSearchHits.length) {
+    const onPage = new Set(source.map(s => s.id));
+    source = source.concat(_archSearchHits.filter(s => !onPage.has(s.id)));
+  }
+
   const searchNums = searchRaw.includes(',')
-    ? [...new Set(searchRaw.split(',').map(v => v.trim()).filter(Boolean))]
+    ? [...new Set(searchRaw.split(',').map(v => v.trim().replace(/^#/, '')).filter(Boolean))]
     : null;
   const search = searchRaw.toLowerCase();
+  // Phone match on digits only, so "70676454", "070 676 454" and "+961 70676454" all hit.
+  const phoneNeedle = search.replace(/\D/g, '').replace(/^0+/, '');
 
   const rows = source.filter(s => {
+    const serverHit = fullSearch && _archSearchHitIds.has(s.id);
     if (searchNums) {
-      if (!searchNums.includes(String(s.shipNumber).trim())) return false;
-    } else if (search && !(
+      if (!serverHit && !searchNums.includes(String(s.shipNumber).trim())) return false;
+    } else if (search && !serverHit && !(
       (s.shipNumber + '').includes(search) ||
       (s.customerName    || '').toLowerCase().includes(search) ||
       (s.companyName      || '').toLowerCase().includes(search) ||
       (s.driverName        || '').toLowerCase().includes(search) ||
-      (s.customerAddress  || '').toLowerCase().includes(search)
+      (s.customerAddress  || '').toLowerCase().includes(search) ||
+      (phoneNeedle.length >= 3 && (s.customerPhone || '').replace(/\D/g, '').includes(phoneNeedle))
     )) return false;
     if (f.phone && !(s.customerPhone || '').includes(f.phone)) return false;
     if (f.statuses.length && !f.statuses.includes(s.status)) return false;
@@ -604,14 +745,21 @@ function applyUserFilters() {
     return true;
   });
 
-  renderResultsLine(rows.length, source.length);
-  renderCards(rows);
+  if (fullSearch) rows.sort((a, b) => archivedMillis(b) - archivedMillis(a));
+
+  renderResultsLine(rows.length, source.length, fullSearch);
+  renderCards(rows, fullSearch && _archSearchBusy ? t('archSearchingAll') : null);
   updateFiltersDot();
+  renderArchPaginationBar();
 }
 
-function renderResultsLine(shown, total) {
+function renderResultsLine(shown, total, fullSearch) {
   const el = document.getElementById('user-results-line');
   if (!el) return;
+  if (fullSearch) {
+    el.textContent = _archSearchBusy ? t('archSearchingAll') : `${shown} ${t('archSearchResultsAll')}`;
+    return;
+  }
   const label = activeTab === 'orders' ? t('shipments') : t('archivedShipments');
   el.textContent = shown === total ? `${shown} ${label}` : `${t('showing')} ${shown} ${t('of')} ${total} ${label}`;
 }
@@ -657,12 +805,12 @@ function toggleCardMore(id, btn) {
   btn.classList.toggle('open', isOpen);
 }
 
-function renderCards(rows) {
+function renderCards(rows, emptyMsgOverride) {
   const content = document.getElementById('user-content');
   if (!content) return;
   if (!rows.length) {
     const icon = activeTab === 'orders' ? ICONS.package : ICONS.archive;
-    const msg  = activeTab === 'orders' ? t('noOrdersMatchFilters') : t('noArchiveMatchFilters');
+    const msg  = emptyMsgOverride || (activeTab === 'orders' ? t('noOrdersMatchFilters') : t('noArchiveMatchFilters'));
     content.innerHTML = `<div class="viewer-empty"><div class="empty-icon-wrap">${icon}</div><p>${esc(msg)}</p></div>`;
     return;
   }
@@ -714,7 +862,7 @@ function applyUserLang() {
   set('install-banner-btn', t('installBtnShort'));
 
   const searchEl = document.getElementById('user-search');
-  if (searchEl) searchEl.placeholder = activeTab === 'orders' ? t('searchShipments') : t('searchArchive');
+  if (searchEl) searchEl.placeholder = activeTab === 'orders' ? t('searchShipments') : t('userSearchArchive');
 }
 
 // ===== PWA INSTALL PROMPT =====
