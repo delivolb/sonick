@@ -39,6 +39,7 @@ function setupUI() {
   const ndr = document.getElementById('nav-drivers');
   const nu  = document.getElementById('nav-users');
   const nb  = document.getElementById('nav-backup');
+  const nsl = document.getElementById('nav-shiplog');
   const nim = document.getElementById('nav-import');
   const nf  = document.getElementById('nav-section-fin');
   const nm  = document.getElementById('nav-section-mgmt');
@@ -52,6 +53,7 @@ function setupUI() {
   if (ndr) ndr.style.display = can('canManageDrivers')   ? '' : 'none';
   if (nu)  nu.style.display  = can('canManageUsers')     ? '' : 'none';
   if (nb)  nb.style.display  = can('canManageBackup')    ? '' : 'none';
+  if (nsl) nsl.style.display = can('canManageUsers')     ? '' : 'none';
   if (nim) nim.style.display = can('canCreateShipments') ? '' : 'none';
   if (tnb) tnb.style.display = can('canCreateShipments') ? '' : 'none';
   if (nf)  nf.style.display  = (can('canViewDebts')       || can('canViewGeneral'))    ? '' : 'none';
@@ -83,6 +85,7 @@ function navigate(page) {
     home:           t('home'),
     dashboard:      t('dashboard'),    shipments: t('shipments'),
     archive:        t('archive'),
+    shiplog:        t('shipLog'),
     import:         t('importExcelTitle'),
     debts:          t('debtsPayments'),general:   t('generalReport'),
     statement:      t('generalStatement'),
@@ -101,6 +104,7 @@ function navigate(page) {
     dashboard:      renderDashboard,
     shipments:      renderShipments,
     archive:        renderArchive,
+    shiplog:        renderShipLog,
     import:         renderImport,
     debts:          renderDebts,
     general:        renderGeneral,

@@ -688,6 +688,7 @@ async function _applyBulkAssign(ships, updates, notFound) {
       const batch = db.batch();
       ships.forEach(s => batch.update(db.collection('sonick_shipments').doc(s.id), payload));
       await batch.commit();
+      logShipmentUpdates(ships.map(s => ({ before: s, payload })), 'bulkAssign');
     }
     const msg = `${ships.length} ${t('ordersAssignedLabel')}` +
       (notFound.length ? ` — ${t('notFoundLabel')}: ${notFound.join(', ')}` : '');
@@ -1059,6 +1060,7 @@ async function commitBulkStatus(ids, newStatus, extraPayload) {
   payload.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
   payload.updatedBy = currentUserData?.id || '';
 
+  const logItems = [];
   try {
     if (db) {
       const batch = db.batch();
@@ -1073,8 +1075,10 @@ async function commitBulkStatus(ids, newStatus, extraPayload) {
           };
         }
         batch.update(db.collection('sonick_shipments').doc(id), rowPayload);
+        logItems.push({ before: (window._allShips || []).find(x => x.id === id), payload: rowPayload });
       });
       await batch.commit();
+      logShipmentUpdates(logItems, 'bulkStatus');
     }
     toast(`${ids.length} ${t('statusUpdatedLabel')}`, 'success');
     window._selectedShipIds = new Set();
@@ -1254,8 +1258,10 @@ async function saveInlineField(id, field, value, onFail, extraPayload) {
   payload.updatedAt = (firebase?.firestore?.FieldValue?.serverTimestamp) ? firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString();
   payload.updatedBy = currentUserData?.id || '';
 
+  const logBefore = (window._allShips || []).find(x => x.id === id);
   try {
     if (db) await db.collection('sonick_shipments').doc(id).update(payload);
+    logShipmentUpdate(logBefore, payload, 'inline');
     toast(t('shipmentUpdated'), 'success');
     await refreshShipmentsData();
   } catch (e) {
@@ -1548,6 +1554,7 @@ async function saveShipment() {
   try {
     if (editingId) {
       if (db) await db.collection('sonick_shipments').doc(editingId).update(payload);
+      logShipmentUpdate({ id: editingId, ...(window._editShipmentOriginal || {}) }, payload, 'edit');
       toast(t('shipmentUpdated'), 'success');
     } else {
       payload.createdAt = ts;
@@ -1611,7 +1618,8 @@ async function viewShipment(id) {
   document.getElementById('modal-detail-footer').innerHTML = `
   <button class="btn btn-secondary" onclick="closeModal('modal-detail')">${t('close')}</button>
   ${can('canEditShipments') ? `<button class="btn btn-primary"   onclick="closeModal('modal-detail');editShipment('${id}')">${t('edit')}</button>`       : ''}
-  ${can('canArchive')       ? `<button class="btn btn-secondary" onclick="closeModal('modal-detail');archiveShipment('${id}')">${t('archiveBtn')}</button>` : ''}`;
+  ${can('canArchive')       ? `<button class="btn btn-secondary" onclick="closeModal('modal-detail');archiveShipment('${id}')">${t('archiveBtn')}</button>` : ''}
+  ${can('canManageUsers')   ? `<button class="btn btn-secondary" onclick="openShipmentHistory('${id}', '${esc(String(s.shipNumber || '')).replace(/'/g, '&#39;')}')">📝 ${t('shipLog')}</button>` : ''}`;
 
   openModal('modal-detail');
 }
@@ -1651,7 +1659,12 @@ function openNewShipmentModal() {
 async function deleteShipment(id) {
   confirmAction(t('deleteShipmentConfirm'), t('cannotUndo'), async () => {
     try {
-      if (db) await db.collection('sonick_shipments').doc(id).delete();
+      if (db) {
+        const ref  = db.collection('sonick_shipments').doc(id);
+        const snap = await ref.get();
+        await ref.delete();
+        if (snap.exists) await logShipmentDeletes([{ id, ...snap.data() }], 'delete');
+      }
       toast(t('shipmentDeleted'), 'success');
       renderShipments();
     } catch (e) { toast(t('error') + e.message, 'error'); }
@@ -2528,7 +2541,12 @@ async function deleteArchivedShipment(id) {
   if (!can('canDeleteShipments')) { toast(t('noPermission'), 'error'); return; }
   confirmAction(t('deleteArchivedConfirm'), t('cannotUndo'), async () => {
     try {
-      if (db) await db.collection('sonick_archive').doc(id).delete();
+      if (db) {
+        const ref  = db.collection('sonick_archive').doc(id);
+        const snap = await ref.get();
+        await ref.delete();
+        if (snap.exists) await logShipmentDeletes([{ id, ...snap.data() }], 'archiveDelete');
+      }
       archCounterAdjust(-1);
       toast(t('archivedOrderDeleted'), 'success');
       window._selectedArchIds?.delete(id);
@@ -2547,6 +2565,8 @@ async function deleteSelectedArchived() {
   confirmAction(t('deleteArchivedConfirm'), `${t('cannotUndo')} (${ids.length})`, async () => {
     try {
       if (db) {
+        // Snapshot the orders first so the change log can record what was removed.
+        const logDocs = await Promise.all(ids.map(id => db.collection('sonick_archive').doc(id).get().catch(() => null)));
         const CHUNK = 400; // delete-only = 1 write/doc
         for (let i = 0; i < ids.length; i += CHUNK) {
           const batch = db.batch();
@@ -2555,6 +2575,7 @@ async function deleteSelectedArchived() {
           batch.set(archCounterDocRef(), { archivedCount: firebase.firestore.FieldValue.increment(-chunkIds.length) }, { merge: true });
           await batch.commit();
         }
+        await logShipmentDeletes(logDocs.filter(d => d && d.exists).map(d => ({ id: d.id, ...d.data() })), 'archiveBulkDelete');
       }
       toast(`${ids.length} ${t('archivedOrdersDeletedLabel')}`, 'success');
       window._selectedArchIds = new Set();

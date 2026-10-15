@@ -1348,7 +1348,7 @@ function applyLang() {
   const navLabelMap = {
     home: 'home',
     dashboard: 'dashboard', shipments: 'shipments',
-    archive: 'archive', import: 'importExcelTitle',
+    archive: 'archive', shiplog: 'shipLog', import: 'importExcelTitle',
     debts: 'debtsPayments', general: 'generalReport', statement: 'generalStatement',
     companies: 'companies', contractors: 'contractors', drivers: 'drivers',
     users: 'users', settings: 'settings', backup: 'backupRestore'
