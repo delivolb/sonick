@@ -1454,6 +1454,39 @@ function buildSettlementEntityRows(byCompany, byContractor) {
   }));
 }
 
+/** The "Old Balance" (الرصيد السابق) values the admin entered on the General Statement page,
+ *  as { driver: {name: $}, entity: {name: {dollar, leb}} }. Starts from the saved copy
+ *  (settlementOldBalances, loaded from sonick_settings/general) and, when the Statement page
+ *  is open, overrides it with whatever is typed in the inputs right now — so a value typed a
+ *  moment ago whose debounced auto-save hasn't fired yet still lands in the export. */
+function collectSettlementOldBalances() {
+  const saved = (typeof settlementOldBalances === 'object' && settlementOldBalances) || {};
+  const driver = { ...(saved.driver || {}) };
+  const entity = {};
+  Object.entries(saved.entity || {}).forEach(([k, v]) => { entity[k] = { ...(v || {}) }; });
+
+  if (document.getElementById('stmt-drv-net-total')) {
+    (window._statementDriverNames || []).forEach((name, idx) => {
+      const el = document.getElementById(`stmt-drv-oldbal-${idx}`);
+      if (!el) return;
+      const val = parseFloat(el.value);
+      if (!isNaN(val) && val !== 0) driver[name] = val; else delete driver[name];
+    });
+    (window._statementEntities || []).forEach((e, idx) => {
+      const dEl = document.getElementById(`stmt-comp-oldbal-dollar-${idx}`);
+      const lEl = document.getElementById(`stmt-comp-oldbal-leb-${idx}`);
+      if (!dEl && !lEl) return;
+      const dol = parseFloat(dEl?.value);
+      const leb = parseFloat(lEl?.value);
+      const entry = {};
+      if (!isNaN(dol) && dol !== 0) entry.dollar = dol;
+      if (!isNaN(leb) && leb !== 0) entry.leb = leb;
+      if (Object.keys(entry).length) entity[e.name] = entry; else delete entity[e.name];
+    });
+  }
+  return { driver, entity };
+}
+
 async function exportSettlementExcel() {
   const data = window._generalReportData;
   if (!data || !data.showProfit) { toast(t('noDataToExport'), 'info'); return; }
@@ -1463,6 +1496,7 @@ async function exportSettlementExcel() {
   if (!filename) return; // cancelled
 
   const { byDriver, byContractor, byCompany } = data;
+  const oldBalances = collectSettlementOldBalances();
   const C = GENERAL_REPORT_COLORS;
   const isRTL = document.documentElement.dir === 'rtl';
   const exportedOn = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -1532,11 +1566,18 @@ async function exportSettlementExcel() {
   // cached `result` — Excel shows that cached number immediately (even before any
   // recalculation, e.g. while still in Protected View), and still recalculates live off the
   // real formula the moment the user edits an Old Balance cell after enabling editing.
-  let totalDol = 0, totalLeb = 0, totalDriverProfit = 0, totalNetAccount = 0;
+  // totalNetAccount stays the pre-old-balance figure (it feeds Office Profit, which the
+  // on-screen Statement page deliberately computes WITHOUT old balances); the Net Account
+  // column itself = Total $ - Driver Profit + Old Balance, same as the page shows.
+  let totalDol = 0, totalLeb = 0, totalDriverProfit = 0, totalNetAccount = 0, totalDriverOld = 0, totalDriverFinal = 0;
   driverEntries.forEach(([name, v], idx) => {
     const netAccount = v.dol - (v.cost || 0);
+    const oldBal = Number(oldBalances.driver[name]) || 0;
     totalDol += v.dol || 0; totalLeb += v.leb || 0; totalDriverProfit += v.cost || 0; totalNetAccount += netAccount;
-    const row = dSheet.addRow([{ formula: 'ROW()-3', result: idx + 1 }, name, v.dol, v.leb || 0, v.cost || 0, null, netAccount]);
+    totalDriverOld += oldBal; totalDriverFinal += netAccount + oldBal;
+    const r = dSheet.rowCount + 1;
+    const row = dSheet.addRow([{ formula: 'ROW()-3', result: idx + 1 }, name, v.dol, v.leb || 0, v.cost || 0,
+      oldBal || null, { formula: `C${r}-E${r}+F${r}`, result: netAccount + oldBal }]);
     const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : C.rowAlt;
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
       const col = driverCols[colNum - 1];
@@ -1554,8 +1595,8 @@ async function exportSettlementExcel() {
     { formula: `SUM(C4:C${driverTotalRowIdx - 1})`, result: totalDol },
     { formula: `SUM(D4:D${driverTotalRowIdx - 1})`, result: totalLeb },
     { formula: `SUM(E4:E${driverTotalRowIdx - 1})`, result: totalDriverProfit },
-    { formula: `SUM(F4:F${driverTotalRowIdx - 1})`, result: 0 },
-    { formula: `SUM(G4:G${driverTotalRowIdx - 1})`, result: totalNetAccount }]);
+    { formula: `SUM(F4:F${driverTotalRowIdx - 1})`, result: totalDriverOld },
+    { formula: `SUM(G4:G${driverTotalRowIdx - 1})`, result: totalDriverFinal }]);
   dTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
     const col = driverCols[colNum - 1];
     cell.font = { bold: true, color: { argb: C.ink } };
@@ -1595,7 +1636,8 @@ async function exportSettlementExcel() {
   cSheet.columns = compCols.map((c, i) => ({ width: i === 1 || i === 4 ? 22 : 15 }));
 
   let totalCompanyDol = 0, totalCompanyLeb = 0, totalContractorDol = 0, totalContractorFee = 0,
-      totalContractorNet = 0, totalContractorLeb = 0, totalNetDol = 0, totalNetLeb = 0;
+      totalContractorNet = 0, totalContractorLeb = 0, totalNetDol = 0, totalNetLeb = 0,
+      totalOldDol = 0, totalOldLeb = 0, totalFinalDol = 0, totalFinalLeb = 0;
   entities.forEach((e, idx) => {
     // Keep in sync with pages.js (renderGeneralStatement / recalcGeneralStatementTotals):
     // company revenue minus our profit share, matching "Amount Due to Company" elsewhere.
@@ -1610,16 +1652,20 @@ async function exportSettlementExcel() {
     totalCompanyDol += companyDol; totalCompanyLeb += companyLeb; totalContractorDol += contractorDol;
     totalContractorFee += contractorFee; totalContractorNet += contractorNet; totalContractorLeb += contractorLeb;
     totalNetDol += netDol; totalNetLeb += netLeb;
+    const oldDol = Number(oldBalances.entity[e.name]?.dollar) || 0;
+    const oldLeb = Number(oldBalances.entity[e.name]?.leb) || 0;
+    totalOldDol += oldDol; totalOldLeb += oldLeb;
+    totalFinalDol += netDol + oldDol; totalFinalLeb += netLeb + oldLeb;
 
     const row = cSheet.addRow([
       { formula: 'ROW()-3', result: idx + 1 },
       e.company ? e.name : '-', companyDol, companyLeb,
       e.contractor ? e.name : '-', contractorDol, contractorFee, contractorNet, contractorLeb,
-      netDol, netLeb, null, null, null, null,
+      netDol, netLeb, oldDol || null, oldLeb || null, null, null,
     ]);
     const rowIdx = row.number;
-    row.getCell(14).value = { formula: `J${rowIdx}+L${rowIdx}`, result: netDol };
-    row.getCell(15).value = { formula: `K${rowIdx}+M${rowIdx}`, result: netLeb };
+    row.getCell(14).value = { formula: `J${rowIdx}+L${rowIdx}`, result: netDol + oldDol };
+    row.getCell(15).value = { formula: `K${rowIdx}+M${rowIdx}`, result: netLeb + oldLeb };
 
     const bandColor = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF3EBFF';
     row.eachCell({ includeEmpty: true }, (cell, colNum) => {
@@ -1639,7 +1685,7 @@ async function exportSettlementExcel() {
   const cTotalRow = cSheet.addRow([
     '', `${t('total')} (${entities.length})`, sumFormula(2, totalCompanyDol), sumFormula(3, totalCompanyLeb), '',
     sumFormula(5, totalContractorDol), sumFormula(6, totalContractorFee), sumFormula(7, totalContractorNet), sumFormula(8, totalContractorLeb),
-    sumFormula(9, totalNetDol), sumFormula(10, totalNetLeb), sumFormula(11, 0), sumFormula(12, 0), sumFormula(13, totalNetDol), sumFormula(14, totalNetLeb),
+    sumFormula(9, totalNetDol), sumFormula(10, totalNetLeb), sumFormula(11, totalOldDol), sumFormula(12, totalOldLeb), sumFormula(13, totalFinalDol), sumFormula(14, totalFinalLeb),
   ]);
   cTotalRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
     const col = compCols[colNum - 1];
@@ -1713,8 +1759,10 @@ async function exportSettlementExcel() {
   sumRow += 2;
 
   addSummaryRow('settlementNetCompaniesLabel',      companiesNetDolFormula,   companiesNetLebFormula,   C.purple, totalNetDol, totalNetLeb);
-  addSummaryRow('settlementCompaniesFinalLabel',    companiesFinalDolFormula, companiesFinalLebFormula, C.purple, totalNetDol, totalNetLeb);
-  addSummaryRow('settlementOfficeProfitLabel',      `G${driverTotalRowIdx}-(${companiesNetDolFormula})`, null, C.green, officeProfitTotal);
+  addSummaryRow('settlementCompaniesFinalLabel',    companiesFinalDolFormula, companiesFinalLebFormula, C.purple, totalFinalDol, totalFinalLeb);
+  // Net Account (G) now includes the drivers' old balances (F); subtract them back out so
+  // Office Profit matches the Statement page, where old balances never change office profit.
+  addSummaryRow('settlementOfficeProfitLabel',      `(G${driverTotalRowIdx}-F${driverTotalRowIdx})-(${companiesNetDolFormula})`, null, C.green, officeProfitTotal);
   addSummaryRow('settlementDriverProfitTotalLabel', `E${driverTotalRowIdx}`,  null, C.green, totalDriverProfit);
   addSummaryRow('settlementContractorProfitTotalLabel', contractorFeeTotalFormula, null, C.green, totalContractorFee);
   const combinedRow = sumRow;

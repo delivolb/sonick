@@ -4971,7 +4971,7 @@ async function renderSettings() {
   </div>
   <div class="settings-section">
     <div class="settings-section-title">ℹ️ ${esc(t('systemInfoTitle'))}</div>
-    <div class="settings-row"><div class="settings-row-label">${esc(t('versionLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);">2.0.0-web</span></div>
+    <div class="settings-row"><div class="settings-row-label">${esc(t('versionLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);">2.0.1-web</span></div>
     <div class="settings-row"><div class="settings-row-label">${esc(t('firebaseProjectLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);">${firebaseConfig.projectId||esc(t('notConfiguredText'))}</span></div>
     <div class="settings-row"><div class="settings-row-label">${esc(t('userIdLabel'))}</div><span style="color:var(--text-3);font-family:var(--mono);font-size:11px;">${currentUser?.uid||'—'}</span></div>
   </div>`;
@@ -5279,7 +5279,7 @@ async function createBackup() {
     const payload = {
       _sonickBackup: true,
       exportedAt: new Date().toISOString(),
-      appVersion: '2.0.0-web',
+      appVersion: '2.0.1-web',
       collections
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
